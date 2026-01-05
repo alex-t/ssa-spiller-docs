@@ -1,0 +1,14 @@
+OpenAI.txt
+_Archive_OldVault/
+# Obsidian local config
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache/
+.obsidian/.cache/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Optional: plugins state
+.obsidian/plugins/**/data.json
