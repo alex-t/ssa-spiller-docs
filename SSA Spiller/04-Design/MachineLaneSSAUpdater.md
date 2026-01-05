@@ -5,8 +5,9 @@
 
 ## Source mapping
 
-- **Header**: `llvm/CodeGen/MachineLaneSSAUpdater.h`
-- **Impl**: `llvm/CodeGen/MachineLaneSSAUpdater.cpp`
+- Commit: `45385c6f5f00`
+- Header: [MachineLaneSSAUpdater.h](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/include/llvm/CodeGen/MachineLaneSSAUpdater.h)
+- Impl: [MachineLaneSSAUpdater.cpp](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp)
 
 ## Problem statement
 
@@ -24,6 +25,8 @@ We need to:
 ## High-level API
 
 ### `repairSSAForNewDef`
+
+Code: [repairSSAForNewDef](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp#L53-L119)
 
 ```cpp
 Register repairSSAForNewDef(MachineInstr &NewDefMI,
@@ -43,11 +46,13 @@ This is used by the SSA spiller as a temporary workaround for “static NUA limi
 
 ### `isUseReachableFromDef`
 
+Code: [isUseReachableFromDef](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp#L769-L879)
+
 Two overloads:
 - `(MachineInstr *DefMI, MachineInstr *UseMI, Register OrigVReg, LaneBitmask DefMask)`
 - `(MachineOperand &DefOp, MachineOperand &UseOp, Register OrigVReg)`
 
-This is the helper used by the SSA spiller to classify non-dominated uses as “reachable” via pruned IDF.
+This is the helper used by the SSA spiller to classify non-dominated uses as "reachable" via pruned IDF.
 
 ## Core algorithm (repairSSAForNewDef)
 
@@ -140,9 +145,30 @@ Temporary workaround:
 
 See: `Static NUA limitation.md`.
 
+## Critical: LiveInterval must be killed before SSA repair
+
+### Problem: [SSA Repairing Disorder](../08-Worklog/issues/SSA%20Spiller/SSA%20Repairing%20Disorder.md)
+
+When multiple dominated uses exist in a diamond CFG, SSAUpdater may incorrectly merge 
+`{reload, original_spilled_value}` because it sees the original value as "available" 
+via LiveIntervals even though it was logically spilled.
+
+### Solution (implemented in SSA Spiller)
+
+**Before** calling `repairSSAForNewDef`, the spiller must:
+1. Kill the original LiveInterval from the spill point onward
+2. Cut the interval in all blocks dominated by the spill block
+
+This ensures SSAUpdater cannot see the original value as available, and will only 
+merge reloaded values in PHIs.
+
+See: [Design Change: Prevent SSA Repair Disorder](Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region)
+
+---
+
 ## Open questions / TODOs
 
 - Decide long-term NUA strategy:
-  - sentinel “unknown distance” value, and/or
+  - sentinel "unknown distance" value, and/or
   - on-demand NUA recomputation for new vregs.
 - Add post-repair verification hooks (`MF.verify()` / `LIS.verify()`) behind a debug flag if seen useful.

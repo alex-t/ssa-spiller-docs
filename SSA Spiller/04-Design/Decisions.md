@@ -108,11 +108,11 @@ When we insert a spill for a VRegMaskPair at instruction index `KillIdx`, we mus
 
 This prevents dominated blocks from being considered “live for old x”, so they will not be pulled into the reload’s IDF set when filtered by LiveAt, and SSAUpdater cannot synthesize PHIs that merge with the original value.
 
-### Implementation hooks (new helpers)
-
-```cpp
-/// Collects all dominated blocks of the given spill block. void collectDominatedBlocks(MachineBasicBlock &SpillMBB,                             SmallVectorImpl<MachineBasicBlock *> &DomBBs) const;  void cutFromLiveRange(LiveRange &LR, SlotIndex CutStart, SlotIndex CutEnd);  void killIntervalInDominatedRegion(const SlotIndex &KillIdx, LiveInterval &LI);
-```
+### Implementation Reference
+- Commit: `45385c6f5f00`
+- [collectDominatedBlocks](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L1523-L1531)
+- [cutFromLiveRange](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L1533-L1555)
+- [killIntervalInDominatedRegion](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L1557-L1581)
 
 
 ## How the fix changes the situation

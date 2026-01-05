@@ -269,9 +269,9 @@ This provides a principled improvement path for Next Use Analysis.
     
 - [[04-Design/Architecture]]
     
-- [[03-Concepts/MIN Algorithm (Belady)]]
+- [[03-Concepts/MIN Algorithm]]
     
-- [[10-Backlog/Ideas]]
+- [[10-Backlog/Open problems]]
     
 
 ---
