@@ -1,3 +1,0 @@
-- Check if [[SSA Spiller/02-Components/MachineLaneSSAUpdater|MachineLaneSSAUpdater]] unit tests is broken because of the design changes [[Decisions#Static Next Use Analysis limitation|Avoid spilling of the VRegs created by SSA repair]]
-- Revise and systemize [[SSA Spiller Test Approach]]
-- Review [[SSA Spiller/05-Testing/SSA Spiller/SSA_SPILLER_TEST_PATTERNS|SSA_SPILLER_TEST_PATTERNS]]

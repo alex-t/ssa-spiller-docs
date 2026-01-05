@@ -6,7 +6,7 @@ for LLVM AMDGPU backend.
 
 ## Components
 
-- [[SSA Spiller/README]] — Early SSA-based spilling pass
+- [[SSA_Spiller/README]] — Early SSA-based spilling pass
 
 
 ## Status

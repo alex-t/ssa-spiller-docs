@@ -1,0 +1,5 @@
+- Fixed [[SSA repair failure]]
+- Workaround for [[Static_NUA_limitation]]
+- 2 dom groups tests added - WIP : no CHECKs yet
+  - spill-dom-groups-a.mir - works as expected: x and y spilled, one reload for each dom group.
+  - spill-dom-groups-b.mir - x, y spilled but **y is spilled in x dom group** and  **x is spilled in y dom group - need further tuning**.
