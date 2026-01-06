@@ -1,29 +1,58 @@
 # SSA Spiller
 
-SSA-aware spiller operating on Machine IR.
+**SSA-aware spiller operating on AMDGPU Machine IR**
 
-## Entry Point
-spillAndReload()
+## Source
 
-## Core Functions
-- spillAtDefinition()
-- emitReloadsAndRepairSSA()
-- tryHoistSpillToNCD()
-- splitBlockBeforeReload()
-- handleReachableUse() [currently disabled]
+- **Implementation**: [`AMDGPUSSARegisterSpiller.cpp`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp)
+
+## Strategy
+
+**Store-at-definition** spill placement:
+- Physical store emitted immediately after value definition (EXEC guaranteed full)
+- Virtual spill point (KillIdx) marks where register pressure is relieved
+- Single physical store per spilled register
+- Reloads inserted on-demand, SSA-aware
+
+## Core Flow
+
+```
+1. spillAtDefinition()      — emit store after def
+2. compute KillIdx          — virtual spill point
+3. assignVirt2StackSlot()   — allocate stack slot
+4. emitReloadsAndRepairSSA() — insert reloads, repair SSA
+5. shrinkToUses()           — update LiveIntervals
+```
+
+## Entry Points
+
+| Function | Purpose |
+|----------|---------|
+| `spillAndReload()` | Main entry: atomic spill+reload+SSA repair |
+| `spillAtDefinition()` | Emit store at definition point |
+| `emitReloadsAndRepairSSA()` | Insert reloads with dominance grouping |
 
 ## Working Features
-✅ Dominated use grouping  
+
+✅ Dominated use grouping (DomGroup class)  
 ✅ Store-at-definition  
 ✅ LiveInterval kept valid through reload placement  
 ✅ Single-store design  
 ✅ Subregister handling via VRegMaskPair  
-✅ Reachability filtering  
-✅ SSA repair via MachineLaneSSAUpdater
+✅ Reachability filtering via `isUseReachableFromDef`  
+✅ SSA repair via [[MachineLaneSSAUpdater]]
 
-## Disabled
-⚠️ split-before-use (requires cost model)
+## Pending
+
+⚠️ Cost model for split vs balanced spill decisions
+
+## Rationale
+
+Store-at-definition eliminates EXEC drift issues in divergent control flow. See [[../04-Design/Decisions|Design Decisions]] for details.
 
 ## Related
-- [[02-Components/MachineLaneSSAUpdater]]
-- [[02-Components/Next Use Analysis]]
+
+- [[MachineLaneSSAUpdater]] — SSA repair utility
+- [[Next_Use_Analysis]] — spill candidate selection
+- [[../03-Concepts/MIN_Algorithm|MIN Algorithm]] — theoretical basis
+- [[../04-Design/SSA_SPILLER_DESIGN|Detailed Design]]
