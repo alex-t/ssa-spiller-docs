@@ -1,0 +1,3 @@
+- Check if [MachineLaneSSAUpdater](SSA_Spiller/02-Components/MachineLaneSSAUpdater.md) <!-- TODO: file not found --> unit tests is broken because of the design changes [Avoid spilling of the VRegs created by SSA repair](../04-Design/Decisions.md#static-next-use-analysis-limitation)
+- Revise and systemize [SSA_Spiller Test Approach](../05-Testing/SSA_Spiller/SSA_Spiller_Test_Approach.md)
+- Review [SSA_SPILLER_TEST_PATTERNS](SSA_Spiller/05-Testing/SSA_Spiller/SSA_SPILLER_TEST_PATTERNS.md) <!-- TODO: file not found -->
