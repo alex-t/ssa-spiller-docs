@@ -70,8 +70,56 @@ TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 DRY_RUN=false
 NO_PUSH=false
 
+show_help() {
+    cat << 'EOF'
+publish_public.sh - Publish Obsidian docs to GitHub-compatible public branch
+
+USAGE:
+    cd /path/to/ssa-spiller-docs     # repo root, on branch "work"
+    ./SSA_Spiller/tools/publish_public.sh [OPTIONS]
+
+OPTIONS:
+    --help       Show this help message and exit
+    --dry-run    Prepare files but don't commit or push
+                 (useful to inspect the generated output)
+    --no-push    Commit but skip the push prompt
+
+WHAT IT DOES:
+    1. Creates a git worktree for "public" branch at ../ssa-spiller-docs-public
+    2. Copies README.md and SSA_Spiller/** (excludes .obsidian, images, 11-Temp, etc.)
+    3. Converts Obsidian wikilinks [[Note]] to GitHub markdown [Note](path.md)
+    4. Embeds images ≤300KB as base64; larger images show warning placeholder
+    5. Prompts to commit and push to "public" branch
+
+PREREQUISITES:
+    - Must be run from repository root
+    - Must be on branch "work"
+    - python3 must be available
+    - rsync must be available
+
+OUTPUT:
+    - ../ssa-spiller-docs-public/    Generated public-ready files
+    - tools/publish_report.md        Conversion report (links, images, warnings)
+
+EXAMPLES:
+    # Preview what will be published (no changes committed)
+    ./SSA_Spiller/tools/publish_public.sh --dry-run
+
+    # Publish and commit, but don't push (review first)
+    ./SSA_Spiller/tools/publish_public.sh --no-push
+
+    # Full publish with interactive push prompt
+    ./SSA_Spiller/tools/publish_public.sh
+
+EOF
+    exit 0
+}
+
 for arg in "$@"; do
     case $arg in
+        --help|-h)
+            show_help
+            ;;
         --dry-run)
             DRY_RUN=true
             ;;
@@ -80,6 +128,7 @@ for arg in "$@"; do
             ;;
         *)
             echo "Unknown option: $arg"
+            echo "Use --help for usage information."
             exit 1
             ;;
     esac
@@ -141,8 +190,10 @@ build_excludes() {
     for pattern in "${EXCLUDE_PATTERNS[@]}"; do
         excludes+=(--exclude="$pattern")
     done
-    # Also exclude based on .gitignore
-    excludes+=(--exclude-from="$REPO_ROOT/.gitignore" 2>/dev/null || true)
+    # Also exclude based on .gitignore if it exists
+    if [[ -f "$REPO_ROOT/.gitignore" ]]; then
+        excludes+=(--exclude-from="$REPO_ROOT/.gitignore")
+    fi
     echo "${excludes[@]}"
 }
 

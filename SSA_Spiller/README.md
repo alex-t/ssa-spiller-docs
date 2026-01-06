@@ -5,80 +5,70 @@ implementation and research.
 
 ---
 
-## 📦 Overview
-- [[00-Overview/Project Summary]]
-- [[00-Overview/Scope and Goals]]
-- [[00-Overview/Status]]
-
----
-
 ## 🚦 Pipeline
-- [[01-Pipeline/SSA Rebuilder]]
-- [[01-Pipeline/Early SSA Spiller]]
-- [[01-Pipeline/SSA Register Allocator]]
-- [[SSA_Spiller/01-Pipeline/SSA Destruction]]
+
+- [[SSA_Rebuilder|SSA Rebuilder]]
+- [[Early_SSA_Spiller|Early SSA Spiller]]
+- [[SSA_Register_Allocator|SSA Register Allocator]]
+- [[SSA_Destruction|SSA Destruction]]
 
 ---
 
 ## 🔩 Components
-- [[02-Components/Next Use Analysis]]
-- [[02-Components/SSA Spiller]]
-- [[02-Components/MachineLaneSSAUpdater]]
-- [[02-Components/SSA Rebuilder Pass]]
-- [[02-Components/SSA Register Allocator Impl]]
-- [[02-Components/SSA Decomposer]]
+
+- [[Next_Use_Analysis|Next Use Analysis]]
+- [[SSA_Spiller|SSA Spiller]]
+- [[MachineLaneSSAUpdater]]
+- [[SSA_Register_Allocator_Impl|SSA Register Allocator Impl]]
 
 ---
 
 ## 🧠 Concepts
-- [[03-Concepts/Next Use Distance]]
-- [[03-Concepts/MIN Algorithm (Belady)]]
-- [[03-Concepts/PHI T-Transform]]
-- [[03-Concepts/Perfect Elimination Order (PEO)]]
-- [[03-Concepts/PHI Copies and Permutations]]
-- [[03-Concepts/SSA Deconstruction Theory]]
+
+- [[MIN_Algorithm|MIN Algorithm (Belady)]]
+- [[PHI_T-Transform|PHI T-Transform]]
+- [[Perfect_Elimination_Order_(PEO)|Perfect Elimination Order (PEO)]]
+- [[Chordal_Graphs|Chordal Graphs]]
 
 ---
 
 ## 🎯 Design
-- [[04-Design/Architecture]]
-- [[04-Design/Data Flow]]
-- [[04-Design/Control Flow and Dominance]]
-- [[04-Design/Invariants and Guarantees]]
-- [[04-Design/Design Decisions]]
+
+- [[Architecture]]
+- [[Decisions|Design Decisions]]
+- [[SSA_SPILLER_DESIGN|SSA Spiller Design]]
+- [[Persistent_Map_for_NUA|Persistent Map for NUA]]
 
 ---
 
 ## 🧪 Testing
-- [[05-Testing/Next Use Analysis Tests]]
-- [[05-Testing/SSA Spiller Tests]]
-- [[05-Testing/Validation Strategy]]
+
+- [[NUA_TEST_PATTERNS|Next Use Analysis Tests]]
+- [[SSA_SPILLER_TEST_PATTERNS|SSA Spiller Tests]]
+- [[MachineLaneSSAUpdater_TestFramework_Summary|MachineLaneSSAUpdater Tests]]
 
 ---
 
 ## 📚 Research
-- [[06-Research/Papers]]
-- [[06-Research/Notes]]
 
----
-
-## 🗺 Diagrams
-- [[07-Diagrams/Current]]
-- [[07-Diagrams/Historical]]
+- [[Old_Spill_Placement_Design|Old Spill Placement Design]] (historical)
 
 ---
 
 ## 📝 Worklog
-- [[08-Worklog/History]]
 
----
-
-## 🔌 Integration
-- [[09-Integration/LLVM Pipeline]]
+- [[NOTES|Development Notes]]
+- [[TODO]]
+- [[Status|Issue Status]]
 
 ---
 
 ## 🚧 Backlog
-- [[10-Backlog/Open Problems]]
-- [[10-Backlog/TODO]]
-- [[10-Backlog/Ideas]]
+
+- [[Open_problems|Open Problems]]
+
+---
+
+## 🛠 Tools
+
+- [[TOOLS_USAGE|Tools Usage Guide]]
