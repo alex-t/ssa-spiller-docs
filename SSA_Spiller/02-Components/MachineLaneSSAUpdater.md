@@ -1,250 +1,47 @@
-# MachineLaneSSAUpdater  
-*Lane-aware SSA repair for Machine IR*
+# MachineLaneSSAUpdater
 
----
+**Lane-aware SSA repair utility for LLVM Machine IR**
 
-## 1. Motivation
+## Source
 
-LLVM Machine IR is **not strictly SSA** once we start doing:
-- early spilling
-- reload insertion
-- subregister (lane) manipulation
-- partial register redefinitions
+- **Header**: [`llvm/include/llvm/CodeGen/MachineLaneSSAUpdater.h`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/include/llvm/CodeGen/MachineLaneSSAUpdater.h)
+- **Implementation**: [`llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp)
+- **Upstream PR**: [#163421](https://github.com/llvm/llvm-project/pull/163421)
 
-In particular, on **AMDGPU**, a single virtual register may represent:
-- multiple lanes (`LaneBitmask`)
-- independently spilled / reloaded subregisters
-- definitions that dominate only *some* uses
+## Purpose
 
-The existing **MachineSSAUpdater**:
-- is **not lane-aware**
-- treats registers as indivisible values
-- cannot correctly reason about partial defs and subranges
+Repairs SSA form when a transformation (e.g., reload insertion) creates an illegal redefinition of an existing virtual register. Unlike `MachineSSAUpdater`, this utility is **lane-aware**—it correctly handles subregisters and partial definitions common in AMDGPU.
 
-### Goal
+## Key Capabilities
 
-Provide a **general, reusable, lane-aware SSA repair utility** for Machine IR that:
-- preserves SSA invariants
-- works with subregisters and lane masks
-- integrates with `LiveIntervals`
-- supports early spilling, reloads, and PHI repair
+| Feature | Description |
+|---------|-------------|
+| **Lane-aware PHI insertion** | Inserts PHIs only for affected lanes using pruned IDF |
+| **Subregister handling** | Works with `(VReg, LaneBitmask)` pairs, not just whole registers |
+| **LiveIntervals integration** | Updates live ranges and subranges precisely |
+| **Use rewriting** | Handles exact, subset, and superset lane matches |
 
----
+## Primary API
 
-## 2. High-Level Responsibilities
-
-`MachineLaneSSAUpdater` is responsible for:
-
-1. Detecting SSA violations caused by new definitions
-2. Creating new SSA names (full-register or lane-specific)
-3. Computing dominance reachability with lane awareness
-4. Placing PHIs only where needed
-5. Rewriting uses with exact / subset / superset semantics
-6. Updating `LiveIntervals` precisely
-7. Remaining target-agnostic (TRI-driven)
-
----
-
-## 3. Core Abstraction
-
-The updater operates on **(VReg, LaneBitmask)** pairs rather than plain registers.
-
-Conceptually:
-
-```
-SSA value ≡ (Register, LaneBitmask)
-```
-
-This matches:
-- Machine operand subregisters
-- LiveInterval subranges
-- AMDGPU partial VGPR usage
-
----
-
-## 4. Primary API
-
-### repairSSAForNewDef
-
-```
+```cpp
+// Repair SSA after inserting a new definition of OrigVReg
 Register repairSSAForNewDef(MachineInstr &NewDefMI,
-                            Register OrigVReg);
+                            Register OrigVReg,
+                            SmallVectorImpl<MachineOperand*> &PHIRegDefOps);
+
+// Check if a use is reachable from a definition (via pruned IDF)
+bool isUseReachableFromDef(MachineInstr *DefMI, MachineInstr *UseMI,
+                           Register OrigVReg, LaneBitmask DefMask);
 ```
 
-**Contract**
-- `NewDefMI` defines `OrigVReg` (violates SSA)
-- Definition may be full or subregister
+## Primary Client
 
-**Returns**
-- A new virtual register representing the repaired SSA value
+**AMDGPU SSA Spiller** — calls `repairSSAForNewDef` after emitting reload instructions to restore SSA form.
 
-**Responsibilities**
-1. Identify the defining operand
-2. Derive lane mask from subregister index
-3. Create a new virtual register
-4. Rewrite the definition operand
-5. Perform lane-aware SSA repair
+## Detailed Design
 
----
-
-## 5. SSA Repair Pipeline
-
-```mermaid
-flowchart TD
-    A[New definition of OrigVReg] --> B[Determine DefMask]
-    B --> C[Create NewVReg]
-    C --> D[Replace def operand]
-    D --> E[Compute pruned IDF]
-    E --> F[Insert lane-aware PHIs]
-    F --> G[Rewrite dominated uses]
-    G --> H[Update LiveIntervals]
-```
-
----
-
-## 6. Reachability & Dominance
-
-For a given definition `(DefMI, DefMask)` and a use, the updater must determine
-whether the definition reaches the use **for the relevant lanes**.
-
-### Fast Paths
-- Same block: instruction order
-- Non-PHI: `MDT->dominates(DefBB, UseBB)`
-- PHI operand: check incoming predecessor dominance
-
-### Slow Path
-If dominance alone is insufficient, compute a **pruned Iterated Dominance Frontier**
-(IDF), restricted to blocks where the relevant lanes are live-in.
-
----
-
-## 7. Pruned IDF Computation
-
-**Key idea**
-
-Only consider blocks where:
-```
-OrigVReg is live-in AND
-Live lanes intersect DefMask
-```
-
-This avoids inserting PHIs for dead lanes.
-
-### Cache Key
-
-```
-(VReg, LaneMask, DefBlock)
-```
-
-The cache must be cleared if the CFG is modified.
-
----
-
-## 8. PHI Insertion (Lane-Aware)
-
-PHIs are inserted iteratively until a fixpoint is reached.
-
-```mermaid
-flowchart TD
-    A[Initial Def Block] --> B[Compute IDF]
-    B --> C[Insert PHIs]
-    C --> D[New Def Blocks]
-    D -->|repeat| B
-```
-
-Properties:
-- PHIs are inserted only for affected lanes
-- Each PHI produces a new virtual register
-- Incoming values are computed per predecessor
-
----
-
-## 9. Use Rewriting Semantics
-
-Three cases are handled:
-
-| Case | Description | Action |
-|----|----|----|
-| Exact | Use mask == def mask | Direct rewrite |
-| Subset | Use ⊂ Def | Direct rewrite |
-| Superset | Use ⊃ Def | Build REG_SEQUENCE |
-
-Superset uses require reconstructing the full value from:
-- the new SSA value for modified lanes
-- the old value for untouched lanes
-
----
-
-## 10. LiveIntervals Integration
-
-Requirements:
-- No stale SlotIndexes
-- Precise lane tracking
-- No accidental full-register extension
-
-Strategy:
-1. Index new instructions immediately
-2. Extend main live range only where required
-3. Extend only the affected subranges
-
----
-
-## 11. Undef Edge Policy
-
-Some CFG edges may lack a reaching definition.
-
-Policy:
-- Materialize implicit defs (default)
-- Or leave undef for debugging / experimentation
-
----
-
-## 12. Verification
-
-Optional validation on exit:
-- `MF.verify()`
-- `LIS.verify()`
-
-Highly recommended during SSA-spiller development.
-
----
-
-## 13. Why This Is Not MachineSSAUpdater
-
-| Aspect | MachineSSAUpdater | MachineLaneSSAUpdater |
-|-----|-----|-----|
-| Subregisters | ❌ | ✅ |
-| Lane masks | ❌ | ✅ |
-| LiveIntervals | ❌ | ✅ |
-| Spilling support | ❌ | ✅ |
-| PHI pruning | ❌ | ✅ |
-
-This is a lower-level, stronger primitive intended for advanced backend work.
-
----
-
-## 14. Intended Usage
-
-- SSA-based spilling
-- Subregister reload repair
-- Early VGPR pressure control
-- Post-CFG-expansion SSA restoration
-- Research and prototyping
-
----
-
-## 15. Non-Goals
-
-- Physical register assignment
-- Coalescing
-- Copy propagation
-- Scheduling
-
----
-
-## 16. Open Questions
-
-- Interaction with MachinePostDominatorTree
-- Better heuristics for superset reconstruction
-- Incremental IDF invalidation
-- Debug / visualization hooks
+See [MachineLaneSSAUpdater Design](../04-Design/MachineLaneSSAUpdater.md) for:
+- Core algorithm walkthrough
+- PHI placement and IDF caching
+- LiveInterval handling details
+- Integration with SSA Spiller

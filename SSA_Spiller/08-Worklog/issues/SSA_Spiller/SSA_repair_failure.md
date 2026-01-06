@@ -24,4 +24,4 @@ This PHI is **illegal** because `x` was spilled in `bb0`, so taking the “clean
 
 ## Expected outcome
 
-The test should **fail** without the design change (or should produce a specific incorrect PHI / reload pattern we can `FileCheck` for), and should **pass** once the design change is implemented (see [Fix for SSA Repairing failure](../../../04-Design/Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region)).
+The test should **fail** without the design change (or should produce a specific incorrect PHI / reload pattern we can `FileCheck` for), and should **pass** once the design change is implemented (see [Fix for SSA Repairing failure](SSA_Spiller/04-Design/Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region)).

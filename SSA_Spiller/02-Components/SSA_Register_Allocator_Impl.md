@@ -1,7 +1,7 @@
 # SSA Register Allocator Impl
 
 Implementation-mapping note for the SSA register allocator described in:
-[01-Pipeline/SSA Register Allocator](01-Pipeline/SSA_Register_Allocator.md) <!-- TODO: file not found -->.
+[SSA Register Allocator](SSA_Spiller/01-Pipeline/SSA_Register_Allocator.md).
 
 This is intentionally “symbolic mapping” (like your spiller docs): it names *expected* LLVM/AMDGPU
 integration points and the responsibilities of each component.
@@ -17,7 +17,7 @@ integration points and the responsibilities of each component.
   - `MachineRegisterInfo` (vreg graph, defs/uses)
   - `MachineDominatorTree` (dom traversal + dominance queries)
   - Target register info (`SIRegisterInfo`, `SIInstrInfo`)
-  - Next-use queries: [02-Components/Next Use Analysis](02-Components/Next_Use_Analysis.md) <!-- TODO: file not found -->
+  - Next-use queries: [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md)
   - SSA repair utilities: MachineLaneSSAUpdater (see SSA spiller docs)
 
 ## Proposed internal structure
@@ -43,7 +43,7 @@ Do *not* invent a second spilling model. Reuse the existing model:
 - SSA repair
 
 Links:
-- [02-Components/SSA Spiller](02-Components/SSA_Spiller.md) <!-- TODO: file not found -->
+- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
 - `04-Design/Architecture.md` (“where stored” vs “when freed”)
 
 ### (D) Lane/subregister handling

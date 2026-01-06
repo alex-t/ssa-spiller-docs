@@ -161,9 +161,9 @@ This design is **NOT** to be revived.
 
 For current strategy, see:
 
-- [01-Pipeline/Early SSA Spiller](01-Pipeline/Early_SSA_Spiller.md) <!-- TODO: file not found -->
-- [04-Design/Architecture](04-Design/Architecture.md) <!-- TODO: file not found -->
-- [02-Components/SSA Spiller](02-Components/SSA_Spiller.md) <!-- TODO: file not found -->
+- [Early SSA Spiller](SSA_Spiller/01-Pipeline/Early_SSA_Spiller.md)
+- [Architecture](SSA_Spiller/04-Design/Architecture.md)
+- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
 
 ---
 
@@ -175,5 +175,5 @@ Original file:
 Archived faithfully.
 ## Related (Historical)
 
-- [Old Spill Placement Implementation Plan](Old_Spill_Placement_Implementation_Plan.md)
+- [Old Spill Placement Implementation Plan](SSA_Spiller/06-Research/Archive/Old_Spill_Placement_Implementation_Plan.md)
 

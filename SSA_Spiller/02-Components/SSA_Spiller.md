@@ -25,5 +25,5 @@ spillAndReload()
 ⚠️ split-before-use (requires cost model)
 
 ## Related
-- [02-Components/MachineLaneSSAUpdater](02-Components/MachineLaneSSAUpdater.md) <!-- TODO: file not found -->
-- [02-Components/Next Use Analysis](02-Components/Next_Use_Analysis.md) <!-- TODO: file not found -->
+- [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)
+- [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md)

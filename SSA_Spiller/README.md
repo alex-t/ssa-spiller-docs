@@ -6,79 +6,79 @@ implementation and research.
 ---
 
 ## 📦 Overview
-- [00-Overview/Project Summary](00-Overview/Project_Summary.md) <!-- TODO: file not found -->
-- [00-Overview/Scope and Goals](00-Overview/Scope_and_Goals.md) <!-- TODO: file not found -->
-- [00-Overview/Status](00-Overview/Status.md) <!-- TODO: file not found -->
+- `Project Summary`
+- `Scope and Goals`
+- [Status](SSA_Spiller/08-Worklog/issues/Status.md)
 
 ---
 
 ## 🚦 Pipeline
-- [01-Pipeline/SSA Rebuilder](01-Pipeline/SSA_Rebuilder.md) <!-- TODO: file not found -->
-- [01-Pipeline/Early SSA Spiller](01-Pipeline/Early_SSA_Spiller.md) <!-- TODO: file not found -->
-- [01-Pipeline/SSA Register Allocator](01-Pipeline/SSA_Register_Allocator.md) <!-- TODO: file not found -->
-- [SSA_Spiller/01-Pipeline/SSA Destruction](SSA_Spiller/01-Pipeline/SSA_Destruction.md) <!-- TODO: file not found -->
+- [SSA Rebuilder](SSA_Spiller/01-Pipeline/SSA_Rebuilder.md)
+- [Early SSA Spiller](SSA_Spiller/01-Pipeline/Early_SSA_Spiller.md)
+- [SSA Register Allocator](SSA_Spiller/01-Pipeline/SSA_Register_Allocator.md)
+- [SSA Destruction](SSA_Spiller/01-Pipeline/SSA_Destruction.md)
 
 ---
 
 ## 🔩 Components
-- [02-Components/Next Use Analysis](02-Components/Next_Use_Analysis.md) <!-- TODO: file not found -->
-- [02-Components/SSA Spiller](02-Components/SSA_Spiller.md) <!-- TODO: file not found -->
-- [02-Components/MachineLaneSSAUpdater](02-Components/MachineLaneSSAUpdater.md) <!-- TODO: file not found -->
-- [02-Components/SSA Rebuilder Pass](02-Components/SSA_Rebuilder_Pass.md) <!-- TODO: file not found -->
-- [02-Components/SSA Register Allocator Impl](02-Components/SSA_Register_Allocator_Impl.md) <!-- TODO: file not found -->
-- [02-Components/SSA Decomposer](02-Components/SSA_Decomposer.md) <!-- TODO: file not found -->
+- [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md)
+- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
+- [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)
+- `SSA Rebuilder Pass`
+- [SSA Register Allocator Impl](SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md)
+- `SSA Decomposer`
 
 ---
 
 ## 🧠 Concepts
-- [03-Concepts/Next Use Distance](03-Concepts/Next_Use_Distance.md) <!-- TODO: file not found -->
-- [03-Concepts/MIN Algorithm (Belady)](03-Concepts/MIN_Algorithm_(Belady).md) <!-- TODO: file not found -->
-- [03-Concepts/PHI T-Transform](03-Concepts/PHI_T-Transform.md) <!-- TODO: file not found -->
-- [03-Concepts/Perfect Elimination Order (PEO)](03-Concepts/Perfect_Elimination_Order_(PEO).md) <!-- TODO: file not found -->
-- [03-Concepts/PHI Copies and Permutations](03-Concepts/PHI_Copies_and_Permutations.md) <!-- TODO: file not found -->
-- [03-Concepts/SSA Deconstruction Theory](03-Concepts/SSA_Deconstruction_Theory.md) <!-- TODO: file not found -->
+- `Next Use Distance`
+- `MIN Algorithm (Belady)`
+- [PHI T-Transform](SSA_Spiller/03-Concepts/PHI_T-Transform.md)
+- [Perfect Elimination Order (PEO)](SSA_Spiller/03-Concepts/Perfect_Elimination_Order_%28PEO%29.md)
+- `PHI Copies and Permutations`
+- `SSA Deconstruction Theory`
 
 ---
 
 ## 🎯 Design
-- [04-Design/Architecture](04-Design/Architecture.md) <!-- TODO: file not found -->
-- [04-Design/Data Flow](04-Design/Data_Flow.md) <!-- TODO: file not found -->
-- [04-Design/Control Flow and Dominance](04-Design/Control_Flow_and_Dominance.md) <!-- TODO: file not found -->
-- [04-Design/Invariants and Guarantees](04-Design/Invariants_and_Guarantees.md) <!-- TODO: file not found -->
-- [04-Design/Design Decisions](04-Design/Design_Decisions.md) <!-- TODO: file not found -->
+- [Architecture](SSA_Spiller/04-Design/Architecture.md)
+- `Data Flow`
+- `Control Flow and Dominance`
+- `Invariants and Guarantees`
+- `Design Decisions`
 
 ---
 
 ## 🧪 Testing
-- [05-Testing/Next Use Analysis Tests](05-Testing/Next_Use_Analysis_Tests.md) <!-- TODO: file not found -->
-- [05-Testing/SSA Spiller Tests](05-Testing/SSA_Spiller_Tests.md) <!-- TODO: file not found -->
-- [05-Testing/Validation Strategy](05-Testing/Validation_Strategy.md) <!-- TODO: file not found -->
+- `Next Use Analysis Tests`
+- `SSA Spiller Tests`
+- `Validation Strategy`
 
 ---
 
 ## 📚 Research
-- [06-Research/Papers](06-Research/Papers.md) <!-- TODO: file not found -->
-- [06-Research/Notes](06-Research/Notes.md) <!-- TODO: file not found -->
+- `Papers`
+- [Notes](SSA_Spiller/08-Worklog/NOTES.md)
 
 ---
 
 ## 🗺 Diagrams
-- [07-Diagrams/Current](07-Diagrams/Current.md) <!-- TODO: file not found -->
-- [07-Diagrams/Historical](07-Diagrams/Historical.md) <!-- TODO: file not found -->
+- `Current`
+- `Historical`
 
 ---
 
 ## 📝 Worklog
-- [08-Worklog/History](08-Worklog/History.md) <!-- TODO: file not found -->
+- `History`
 
 ---
 
 ## 🔌 Integration
-- [09-Integration/LLVM Pipeline](09-Integration/LLVM_Pipeline.md) <!-- TODO: file not found -->
+- `LLVM Pipeline`
 
 ---
 
 ## 🚧 Backlog
-- [10-Backlog/Open Problems](10-Backlog/Open_Problems.md) <!-- TODO: file not found -->
-- [10-Backlog/TODO](10-Backlog/TODO.md) <!-- TODO: file not found -->
-- [10-Backlog/Ideas](10-Backlog/Ideas.md) <!-- TODO: file not found -->
+- [Open Problems](SSA_Spiller/10-Backlog/Open_problems.md)
+- [TODO](SSA_Spiller/08-Worklog/TODO.md)
+- `Ideas`

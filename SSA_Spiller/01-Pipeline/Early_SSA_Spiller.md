@@ -16,10 +16,10 @@ Core SSA-aware spilling stage before register allocation.
 5. shrinkToUses()
 
 ## Rationale
-Store-at-definition eliminates [EXEC drift](Spilling_issue_divergent_CFG.canvas.md) <!-- TODO: file not found --> and removes the need for WWM.
-[Old Spill Placement Design](../06-Research/Archive/Old_Spill_Placement_Design.md)
+Store-at-definition eliminates `EXEC drift` and removes the need for WWM.
+[Old Spill Placement Design](SSA_Spiller/06-Research/Archive/Old_Spill_Placement_Design.md)
 
 ## Related
-- [02-Components/SSA Spiller](02-Components/SSA_Spiller.md) <!-- TODO: file not found -->
-- [03-Concepts/MIN Algorithm (Belady)](03-Concepts/MIN_Algorithm_(Belady).md) <!-- TODO: file not found -->
-- [03-Concepts/PHI T-Transform](03-Concepts/PHI_T-Transform.md) <!-- TODO: file not found -->
+- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
+- `MIN Algorithm (Belady)`
+- [PHI T-Transform](SSA_Spiller/03-Concepts/PHI_T-Transform.md)

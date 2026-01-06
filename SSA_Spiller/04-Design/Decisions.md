@@ -31,7 +31,7 @@ for (auto &G : Groups) {
 
 `reloadBefore()` emits the reload and immediately calls `MachineLaneSSAUpdater::repairSSAForNewDef()` (via the spiller wrapper).
 
-[SSA_Repairing_Disorder](../08-Worklog/issues/SSA_Spiller/SSA_Repairing_Disorder.md)
+[SSA_Repairing_Disorder](SSA_Spiller/08-Worklog/issues/SSA_Spiller/SSA_Repairing_Disorder.md)
 
 This “repair-as-you-go” approach is convenient, but it creates an **ordering hazard** when multiple dominated uses exist in a diamond-like CFG.
 
@@ -78,7 +78,7 @@ flowchart TD
 
 **Why it’s wrong:** `x` was already spilled in `bb0`, so `x` is not a valid SSA value flowing into `bb3` along the “clean” path.
 
-- [SSA_Repairing_Disorder](../08-Worklog/issues/SSA_Spiller/SSA_Repairing_Disorder.md)
+- [SSA_Repairing_Disorder](SSA_Spiller/08-Worklog/issues/SSA_Spiller/SSA_Repairing_Disorder.md)
 
 ## Root cause
 
@@ -158,7 +158,7 @@ flowchart TD
 
 ## Appendix: link to original note
 
-See: [SSA_Repairing_Disorder](../08-Worklog/issues/SSA_Spiller/SSA_Repairing_Disorder.md) for the original reasoning and diagrams.
+See: [SSA_Repairing_Disorder](SSA_Spiller/08-Worklog/issues/SSA_Spiller/SSA_Repairing_Disorder.md) for the original reasoning and diagrams.
 
 SSA Repairing Disorder
 
@@ -166,7 +166,7 @@ Sources
 
 
 # Static Next Use Analysis limitation
-We currently don't consider virtual registers created by reload instructions and PHIs results created by SSA Updater for further live interval splitting/spilling because of the [Static_NUA_limitation](../08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md)
-[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md) <!-- TODO: ambiguous link --> repairSSAForNewDef has been changed to fill in the vector of the Machine Operands - inserted PHIs definitions.
+We currently don't consider virtual registers created by reload instructions and PHIs results created by SSA Updater for further live interval splitting/spilling because of the [Static_NUA_limitation](SSA_Spiller/08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md)
+[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md) repairSSAForNewDef has been changed to fill in the vector of the Machine Operands - inserted PHIs definitions.
 
 

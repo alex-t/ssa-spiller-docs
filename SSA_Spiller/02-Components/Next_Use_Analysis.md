@@ -13,4 +13,4 @@ Returns distance-to-next-use for every register at a given instruction.
 - API test for getSortedSubRegs()
 
 ## Related
-- [05-Testing/Next Use Analysis Tests](05-Testing/Next_Use_Analysis_Tests.md) <!-- TODO: file not found -->
+- `Next Use Analysis Tests`

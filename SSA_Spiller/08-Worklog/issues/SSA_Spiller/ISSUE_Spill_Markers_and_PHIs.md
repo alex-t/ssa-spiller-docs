@@ -13,7 +13,7 @@ Key SSA properties:
 
 After SSA destruction, PHIs are lowered into COPY operations placed at the **end of predecessor blocks**.
 
-[Register Allocation for Programs in SSA-Form](ssara.pdf.md) <!-- TODO: file not found -->  by Sebastian Hack, Daniel Grund, and Gerhard Goos discusses techniques for *zero-copy SSA deconstruction*.  
+[Register Allocation for Programs in SSA-Form](SSA_Spiller/06-Research/Papers/ssara.pdf)  by Sebastian Hack, Daniel Grund, and Gerhard Goos discusses techniques for *zero-copy SSA deconstruction*.  
 In our implementation we deliberately take a **conservative model**.
 
 ---
@@ -66,7 +66,7 @@ When enabled:
 - It marks the point where a spilled register becomes dead
 - The marker is placed **immediately before the instruction that triggered spilling**
 
-This mechanism is **debug-only** and does not affect codegen [SSA_SPILLER_DESIGN - Virtual spill point and SI_VIRTUAL_SPILL_MARKER](SSA_SPILLER_DESIGN#Virtual_spill_point_and_SI_VIRTUAL_SPILL_MARKER.md) <!-- TODO: ambiguous link -->.
+This mechanism is **debug-only** and does not affect codegen [SSA_SPILLER_DESIGN](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md#virtual-spill-point-and-si_virtual_spill_marker).
 
 ---
 
@@ -84,7 +84,7 @@ When spilling is triggered by a **PHI instruction**, inserting a spill marker be
 
 ## Example
 
-[CFG with PHIs and spill markers](Pasted_image_20251222213607.png.md) <!-- TODO: file not found -->
+`CFG with PHIs and spill markers`
 
 In the example above, spilling is triggered at a join block containing PHIs.  
 Placing a spill marker in the PHI sequence is illegal.

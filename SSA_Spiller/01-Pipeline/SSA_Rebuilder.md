@@ -13,8 +13,8 @@ This pass disappears when:
 - SSA survives until register allocation
 
 ## Dependency
-Relies on [Components/MachineLaneSSAUpdater](Components/MachineLaneSSAUpdater.md) <!-- TODO: file not found -->
+Relies on [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)
 
 ## Related
-- [Pipeline/Early SSA Spiller](Pipeline/Early_SSA_Spiller.md) <!-- TODO: file not found -->
-- [Concepts/PHI T-Transform](Concepts/PHI_T-Transform.md) <!-- TODO: file not found -->
+- [Early SSA Spiller](SSA_Spiller/01-Pipeline/Early_SSA_Spiller.md)
+- [PHI T-Transform](SSA_Spiller/03-Concepts/PHI_T-Transform.md)

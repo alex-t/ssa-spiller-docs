@@ -12,8 +12,8 @@ Eliminate PHIs with:
 Very high – unresolved research topic
 
 ## Theory
-- [SSA Destruction](SSA_Spiller/03-Concepts/SSA_Destruction.md) <!-- TODO: file not found -->
-- [Concepts/PHI Copies & Permutations](Concepts/PHI_Copies_&_Permutations.md) <!-- TODO: file not found -->
+- [SSA Destruction](SSA_Spiller/01-Pipeline/SSA_Destruction.md)
+- `PHI Copies & Permutations`
 
 ## Status
-See: [Status/Not Implemented Yet](Status/Not_Implemented_Yet.md) <!-- TODO: file not found -->
+See: `Not Implemented Yet`

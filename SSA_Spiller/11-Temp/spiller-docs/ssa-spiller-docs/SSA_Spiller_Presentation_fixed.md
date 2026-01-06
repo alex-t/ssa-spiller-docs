@@ -389,25 +389,25 @@ Register AMDGPUSSARegisterSpiller::repairSSAForReload(
 ; CHECK: bb.1:
 ; CHECK:   [[EXEC_SAVE_SPILL:%[0-9]+]]:sreg_32_xm0_xexec = COPY $exec_lo
 ; CHECK-NEXT:   $exec_lo = S_MOV_B32 -1
-; CHECK-NEXT:   SI_SPILL_V64_SAVE [SPILLREG](SPILLREG.md) <!-- TODO: file not found -->.sub2_sub3, %stack.{{[0-9]+}}, $sgpr32, 0
-; CHECK-NEXT:   $exec_lo = COPY [EXEC_SAVE_SPILL](EXEC_SAVE_SPILL.md) <!-- TODO: file not found -->
+; CHECK-NEXT:   SI_SPILL_V64_SAVE `SPILLREG`.sub2_sub3, %stack.{{[0-9]+}}, $sgpr32, 0
+; CHECK-NEXT:   $exec_lo = COPY `EXEC_SAVE_SPILL`
 ; CHECK:   [[SPILLPATH:%[0-9]+]]:sreg_32 = S_MOV_B32 1
 
 ; CHECK: bb.2.Flow:
-; CHECK:   [[FLAG:%[0-9]+]]:sreg_32 = PHI [SPILLPATH](SPILLPATH.md) <!-- TODO: file not found -->, %bb.1, [[CLEANPATH:%[0-9]+]], %bb.6
+; CHECK:   [[FLAG:%[0-9]+]]:sreg_32 = PHI `SPILLPATH`, %bb.1, [[CLEANPATH:%[0-9]+]], %bb.6
 
 ; CHECK: bb.4.bb2:
-; CHECK:   S_CMP_EQ_U32 [FLAG](FLAG.md) <!-- TODO: file not found -->, 0, implicit-def $scc
+; CHECK:   S_CMP_EQ_U32 `FLAG`, 0, implicit-def $scc
 ; CHECK-NEXT:   S_CBRANCH_SCC1 %bb.8, implicit $scc
 
 ; CHECK: bb.7.bb2:
 ; CHECK:   [[EXEC_SAVE_RELOAD:%[0-9]+]]:sreg_32_xm0_xexec = COPY $exec_lo
 ; CHECK-NEXT:   $exec_lo = S_MOV_B32 -1
 ; CHECK-NEXT:   [[RELOAD:%[0-9]+]]:vreg_64 = SI_SPILL_V64_RESTORE %stack.{{[0-9]+}}, $sgpr32, 0
-; CHECK-NEXT:   $exec_lo = COPY [EXEC_SAVE_RELOAD](EXEC_SAVE_RELOAD.md) <!-- TODO: file not found -->
+; CHECK-NEXT:   $exec_lo = COPY `EXEC_SAVE_RELOAD`
 
 ; CHECK: bb.8.bb2:
-; CHECK:   [[VALUEPHI:%[0-9]+]]:vreg_64 = PHI [RELOAD](RELOAD.md) <!-- TODO: file not found -->, %bb.7, [SPILLREG](SPILLREG.md) <!-- TODO: file not found -->.sub2_sub3, %bb.4
+; CHECK:   [[VALUEPHI:%[0-9]+]]:vreg_64 = PHI `RELOAD`, %bb.7, `SPILLREG`.sub2_sub3, %bb.4
 ```
 
 **Result:** ✅ **Test passes!**

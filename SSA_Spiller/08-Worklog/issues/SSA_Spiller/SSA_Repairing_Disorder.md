@@ -39,8 +39,10 @@ bb0((bb1:<br/>spill x)) -->|!cond|bb2
 bb2 --> bb3[bb3<br/>z = PHI y, bb1, x, bb2<br/>use x]
 bb1 --> bb3
 ```
-**which is wrong because x was spilled in bb0!**![shrink spilled LI.png](shrink_spilled_LI.png.md) <!-- TODO: file not found -->
+**which is wrong because x was spilled in bb0!**
+> ⚠️ Image omitted in public version: `shrink spilled LI.png` (too large: 319.9 KB)
 
 
 
-# Fixed:[Fix for SSA Repairing failure](../../../04-Design/Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region)
+
+# Fixed:[Fix for SSA Repairing failure](SSA_Spiller/04-Design/Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region)

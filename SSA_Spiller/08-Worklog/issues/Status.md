@@ -1,5 +1,5 @@
-- Fixed [SSA repair failure](SSA_Spiller/SSA_repair_failure.md)
-- Workaround for [Static_NUA_limitation](Next_Use_Analysis/Static_NUA_limitation.md)
+- Fixed [SSA repair failure](SSA_Spiller/08-Worklog/issues/SSA_Spiller/SSA_repair_failure.md)
+- Workaround for [Static_NUA_limitation](SSA_Spiller/08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md)
 - 2 dom groups tests added - WIP : no CHECKs yet
   - spill-dom-groups-a.mir - works as expected: x and y spilled, one reload for each dom group.
   - spill-dom-groups-b.mir - x, y spilled but **y is spilled in x dom group** and  **x is spilled in y dom group - need further tuning**.

@@ -17,5 +17,5 @@ Separate "where value stored" from "when register freed".
 
 ## Historical Designs (Rejected)
 
-- [06-Research/Archive/Old Spill Placement Design](06-Research/Archive/Old_Spill_Placement_Design.md) <!-- TODO: file not found -->
+- [Old Spill Placement Design](SSA_Spiller/06-Research/Archive/Old_Spill_Placement_Design.md)
 

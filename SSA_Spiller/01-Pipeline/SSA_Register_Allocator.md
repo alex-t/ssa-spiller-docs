@@ -3,17 +3,17 @@
 SSA-based register allocation stage for AMDGPU Machine IR.
 
 This page is a **pipeline-level** description. Implementation mapping lives in:
-[02-Components/SSA Register Allocator Impl](02-Components/SSA_Register_Allocator_Impl.md) <!-- TODO: file not found -->.
+[SSA Register Allocator Impl](SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md).
 
 ## Strategy
 - Graph-free register assignment (avoid explicit interference graph construction)
 - Dominator-based allocation (operate over the dominator tree, not program order)
 - Chordal/PEO-based reasoning: greedy coloring is optimal on chordal graphs when processed in a
-  [Perfect Elimination Order (PEO)](03-Concepts/Perfect_Elimination_Order_(PEO).md) <!-- TODO: file not found -->
+  [Perfect Elimination Order (PEO)](SSA_Spiller/03-Concepts/Perfect_Elimination_Order_%28PEO%29.md)
 
 ## Theory
-- [03-Concepts/Chordal Graphs](03-Concepts/Chordal_Graphs.md) <!-- TODO: file not found -->
-- [03-Concepts/Perfect Elimination Order (PEO)](03-Concepts/Perfect_Elimination_Order_(PEO).md) <!-- TODO: file not found -->
+- [Chordal Graphs](SSA_Spiller/03-Concepts/Chordal_Graphs.md)
+- [Perfect Elimination Order (PEO)](SSA_Spiller/03-Concepts/Perfect_Elimination_Order_%28PEO%29.md)
 - Papers in `06-Research/Papers/`:
   - *Register Allocation for Programs in SSA Form* (`register-allocation-for-programs-in-ssa-form.pdf`)
   - `ssara.pdf`
@@ -27,7 +27,7 @@ This page is a **pipeline-level** description. Implementation mapping lives in:
   - each vreg has a single def; liveness is dominated by its def
   - “join” effects are explicit (PHIs / phi-like operands in MachineIR SSA)
 - **Spill/evict decisions**:
-  - integrate with [02-Components/Next Use Analysis](02-Components/Next_Use_Analysis.md) <!-- TODO: file not found --> to approximate Belady/MIN decisions
+  - integrate with [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md) to approximate Belady/MIN decisions
   - reuse the “store-at-definition + virtual spill point + SSA repair” model from the SSA spiller
 
 ## Status
@@ -59,7 +59,7 @@ for:
 ### Skeleton
 1. Build/obtain analyses:
    - Dominator tree (MachineDomTree)
-   - Per-instruction next-use info (via [02-Components/Next Use Analysis](02-Components/Next_Use_Analysis.md) <!-- TODO: file not found -->)
+   - Per-instruction next-use info (via [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md))
    - Register class constraints (TargetRegisterInfo / SIRegisterInfo)
 2. Traverse the dominator tree:
    - maintain an **active set** of currently-live SSA values (possibly lane-sliced)
@@ -77,8 +77,8 @@ We explicitly align with your existing AMDGPU SSA spill architecture:
 - **Reload placement + SSA repair** via MachineLaneSSAUpdater
 
 See:
-- [01-Pipeline/Early SSA Spiller](01-Pipeline/Early_SSA_Spiller.md) <!-- TODO: file not found -->
-- [02-Components/SSA Spiller](02-Components/SSA_Spiller.md) <!-- TODO: file not found -->
+- [Early SSA Spiller](SSA_Spiller/01-Pipeline/Early_SSA_Spiller.md)
+- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
 - `04-Design/Architecture.md` (“Separate where value stored from when register freed”)
 
 ### Key difference vs “pre-regalloc spilling”
@@ -106,7 +106,7 @@ store-at-def + virtual-kill + SSA repair.
   - switch to an SSA-native liveness representation (dom-subtree intervals + lane masks).
 
 ## Links
-- Implementation mapping: [02-Components/SSA Register Allocator Impl](02-Components/SSA_Register_Allocator_Impl.md) <!-- TODO: file not found -->
+- Implementation mapping: [SSA Register Allocator Impl](SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md)
 - Concepts:
-  - [03-Concepts/Chordal Graphs](03-Concepts/Chordal_Graphs.md) <!-- TODO: file not found -->
-  - [03-Concepts/Perfect Elimination Order (PEO)](03-Concepts/Perfect_Elimination_Order_(PEO).md) <!-- TODO: file not found -->
+  - [Chordal Graphs](SSA_Spiller/03-Concepts/Chordal_Graphs.md)
+  - [Perfect Elimination Order (PEO)](SSA_Spiller/03-Concepts/Perfect_Elimination_Order_%28PEO%29.md)
