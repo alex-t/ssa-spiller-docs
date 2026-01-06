@@ -14,30 +14,23 @@
 4. shrinkToUses()                 → Trim LiveInterval after all repairs
 ```
 
+Source: [`spillAtDefinition`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L966-L1047), [`emitReloadsAndRepairSSA`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L744-L960)
+
 ### Virtual Spill Marker Pseudo-Instruction
 
 **Compiler Option:** `--amdgpu-ssa-spill-markers=1`
 
-**Instruction:** `SI_VIRTUAL_SPILL_MARKER <vreg_index>, <lane_mask>`
+**Instruction:** [`SI_VIRTUAL_SPILL_MARKER`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/SIInstructions.td) `<vreg_index>, <lane_mask>`
 
-**Purpose:** A test-only pseudo-instruction that marks the **virtual spill point** - the location where register pressure is relieved (register logically becomes dead). This may differ from the **physical store location** (store-at-definition).
+**Purpose:** A test-only pseudo-instruction that marks the **virtual spill point** - the location where register pressure is relieved (register logically becomes dead). This may differ from the **physical store location** ([store-at-definition](../../04-Design/Decisions.md#store-at-definition)).
 
 **Arguments:**
 - `vreg_index`: Virtual register index being spilled
 - `lane_mask`: Lane mask of spilled subregister (e.g., 255 = 0xFF = all lanes of vreg_64, 240 = 0xF0 = sub2_sub3)
 
-**Omission Rule:** The marker is **omitted** when the virtual spill point immediately follows the physical store of the same VMP (i.e., store-at-definition and virtual spill point are at the same position).
+**Omission Rule:** The marker is **omitted** when the virtual spill point immediately follows the physical store of the same [VMP](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/VRegMaskPair.h) (i.e., store-at-definition and virtual spill point are at the same position).
 
-```cpp
-// From AMDGPUSSARegisterSpiller.cpp lines 683-696:
-if (!PrevMI || !isSpillInstr(PrevMI) || !usesSpilledVMP(PrevMI, VMP)) {
-  // Insert marker - virtual spill point differs from store location
-  BuildMI(..., SI_VIRTUAL_SPILL_MARKER).addImm(VReg).addImm(Mask);
-} else {
-  // Skip marker - virtual spill point matches store location
-  LLVM_DEBUG(dbgs() << "Skipping virtual spill marker (adjacent real spill of same VMP)\n");
-}
-```
+Source: [`AMDGPUSSARegisterSpiller.cpp` L709-720](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L709-L720)
 
 **Summary:**
 
@@ -54,8 +47,8 @@ if (!PrevMI || !isSpillInstr(PrevMI) || !usesSpilledVMP(PrevMI, VMP)) {
 
 | Use Type | Current Behavior |
 |----------|-----------------|
-| **Dominated** | Emit reload at group head, rewrite uses |
-| **Reachable** | Emit reload at use, MachineLaneSSAUpdater inserts PHIs |
+| **Dominated** | Emit reload at [group head](../../04-Design/SSA_SPILLER_DESIGN.md#dominance-grouping-domgroup-class), rewrite uses |
+| **Reachable** | Emit reload at use, [`MachineLaneSSAUpdater`](../../02-Components/MachineLaneSSAUpdater.md) inserts PHIs |
 
 ---
 
@@ -63,14 +56,16 @@ if (!PrevMI || !isSpillInstr(PrevMI) || !usesSpilledVMP(PrevMI, VMP)) {
 
 | Test File | What It Tests |
 |-----------|--------------|
-| `spill-linear-dominated.mir` | Basic dominated use case |
-| `spill-dominated-branches.mir` | Dominated use through diamond CFG |
-| `spill-vreg-subregister.mir` | Subregister spilling with value PHIs |
-| `spill-multi-predecessor-join.mir` | Reachable use at multi-pred join |
-| `spill-use-before-spill.mir` | Use before high-RP (no hoist) |
-| `spill-multi-path-independent.mir` | Independent spills on multiple paths |
-| `spill-vreg-many-lanes.mir` | Large vreg_1024 stress test |
-| `spill-balanced-use-before.mir` | **XFAIL** - Balanced spilling not implemented |
+| [`spill-linear-dominated.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-linear-dominated.mir) | Basic dominated use case |
+| [`spill-dominated-branches.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-dominated-branches.mir) | Dominated use through diamond CFG |
+| [`spill-vreg-subregister.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-vreg-subregister.mir) | Subregister spilling with value PHIs |
+| [`spill-multi-predecessor-join.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-multi-predecessor-join.mir) | Reachable use at multi-pred join |
+| [`spill-use-before-spill.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-use-before-spill.mir) | Use before high-RP (no hoist) |
+| [`spill-multi-path-independent.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-multi-path-independent.mir) | Independent spills on multiple paths |
+| [`spill-vreg-many-lanes.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-vreg-many-lanes.mir) | Large vreg_1024 stress test |
+| [`spill-dom-groups-a.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-dom-groups-a.mir) | [Dominance grouping](../../04-Design/SSA_SPILLER_DESIGN.md#dominance-grouping-domgroup-class) - basic |
+| [`spill-dom-groups-b.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-dom-groups-b.mir) | [Dominance grouping](../../04-Design/SSA_SPILLER_DESIGN.md#dominance-grouping-domgroup-class) - complex CFG |
+| [`spill-balanced-use-before.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-balanced-use-before.mir) | **XFAIL** - Balanced spilling not implemented |
 
 ---
 
@@ -331,10 +326,12 @@ Both paths independently exceed RP limit.
 
 ### Concept Diagram
 
+Uses [`getSortedSubregUses()`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L253-L303) for lane ordering by [next-use distance](../../03-Concepts/MIN_Algorithm.md):
+
 ```mermaid
 graph LR
     subgraph "Spill Candidate Selection"
-        A["vreg_1024 (%0)<br/>32 lanes total"] --> B["getSortedSubregs()"]
+        A["vreg_1024 (%0)<br/>32 lanes total"] --> B["getSortedSubregUses()"]
         B --> C["Sort by next-use distance"]
         C --> D["sub31: used at inst 500<br/>sub30: used at inst 480<br/>...<br/>sub0: used at inst 10"]
     end
@@ -356,8 +353,8 @@ graph LR
 | Aspect | Value |
 |--------|-------|
 | **Register Class** | `vreg_1024` (32 VGPRs, 32 lanes) |
-| **Selection Strategy** | `getSortedSubregs()` - sort lanes by next-use distance |
-| **Spill Order** | Furthest-used subregister first (Belady's algorithm per-lane) |
+| **Selection Strategy** | [`getSortedSubregUses()`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L253-L303) - sort lanes by next-use distance |
+| **Spill Order** | Furthest-used subregister first ([Belady's algorithm](../../03-Concepts/MIN_Algorithm.md) per-lane) |
 | **Reload Target** | `vgpr_32` - each lane reloaded independently |
 | **Purpose** | Stress test for lane-aware spilling with large registers |
 
@@ -395,41 +392,131 @@ graph TD
 
 ---
 
+## Test 9: spill-dom-groups-a.mir
+
+### Pattern: Dominance Grouping (Basic)
+
+Tests the [`DomGroup`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.h#L44-L59) mechanism that minimizes reload count by grouping dominated uses.
+
+### CFG Diagram
+
+```mermaid
+graph TD
+    BB0["bb.0.entry<br/>define %x, %y<br/>store %x (at def)"]
+    BB1["bb.1<br/>high RP point<br/>%x selected for spill"]
+    BB2["bb.2<br/>use %x (group head)"]
+    BB3["bb.3<br/>use %x (dominated by bb.2)"]
+    BB4["bb.4.exit<br/>S_ENDPGM"]
+    
+    BB0 --> BB1
+    BB1 --> BB2
+    BB2 --> BB3
+    BB3 --> BB4
+    
+    style BB1 fill:#ffe1e1
+    style BB2 fill:#e1ffe1
+    style BB3 fill:#e1ffe1
+```
+
+### Analysis
+
+| Aspect | Value |
+|--------|-------|
+| **Pattern** | Multiple dominated uses of same register in linear chain |
+| **Key Feature** | Uses grouped by dominance → single reload at group head |
+| **DomGroup Behavior** | bb.2 use dominates bb.3 use → merged into one group |
+| **Reload Count** | 1 (not 2) |
+| **SSA Repair** | Minimal - single reload rewrites both uses |
+
+### Key Points
+- Validates [`DomGroup::merge()`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.h#L52) correctly identifies dominated uses
+- Demonstrates reload minimization in [`emitReloadsAndRepairSSA()`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L744-L960)
+- No PHIs needed (all uses dominated by single reload)
+
+---
+
+## Test 10: spill-dom-groups-b.mir
+
+### Pattern: Dominance Grouping (Complex CFG with Diamond)
+
+Tests dominance grouping with diamond CFG where multiple uses exist across different branches.
+
+### CFG Diagram
+
+```mermaid
+graph TD
+    BB0["bb.0.entry<br/>define %x<br/>store %x (at def)"]
+    BB1["bb.1<br/>high RP, spill %x<br/>branch"]
+    BB2["bb.2.path_a<br/>use %x (group 1 head)"]
+    BB3["bb.3.path_b<br/>use %x (group 2 head)"]
+    BB4["bb.4.join<br/>use %x (dominated by both?)"]
+    BB5["bb.5.exit<br/>S_ENDPGM"]
+    
+    BB0 --> BB1
+    BB1 -->|SCC=1| BB2
+    BB1 -->|SCC=0| BB3
+    BB2 --> BB4
+    BB3 --> BB4
+    BB4 --> BB5
+    
+    style BB1 fill:#ffe1e1
+    style BB2 fill:#e1ffe1
+    style BB3 fill:#e1ffe1
+    style BB4 fill:#e1ffe1
+```
+
+### Analysis
+
+| Aspect | Value |
+|--------|-------|
+| **Pattern** | Diamond CFG with uses on both branches and at join |
+| **Key Feature** | Multiple dominance groups possible |
+| **Group Detection** | Uses in bb.2 and bb.3 are NOT in same group (neither dominates other) |
+| **Reload Count** | 2 (one per branch) |
+| **SSA Repair** | PHI at join merges reloaded values |
+
+### Key Points
+- Validates correct group separation when uses don't dominate each other
+- Tests PHI insertion at join block
+- More complex than basic dom-groups-a test
+
+---
+
 ## Pattern Classification (New Design)
 
 ### Case 1: Dominated Uses
 
-**Definition:** Spill point dominates use point.
+**Definition:** Spill point dominates use point. See [Dominated linear case](../../04-Design/SSA_SPILLER_DESIGN.md#dominated-linear-case-single-path).
 
 **Handling:**
-1. Store at definition
+1. [Store at definition](../../04-Design/Decisions.md#store-at-definition)
 2. Virtual spill point at high-RP location
-3. Reload at dominated group head
+3. Reload at [dominated group head](../../04-Design/SSA_SPILLER_DESIGN.md#dominance-grouping-domgroup-class)
 4. Rewrite all uses in group
 
-**Tests:** `spill-linear-dominated.mir`, `spill-dominated-branches.mir`
+**Tests:** [`spill-linear-dominated.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-linear-dominated.mir), [`spill-dominated-branches.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-dominated-branches.mir)
 
 ### Case 2: Reachable Uses
 
-**Definition:** Use reachable from spill point but not dominated.
+**Definition:** Use reachable from spill point but not dominated. See [Reachable case](../../04-Design/SSA_SPILLER_DESIGN.md#reachable-non-dominated-case-join).
 
 **Handling:**
-1. Store at definition
+1. [Store at definition](../../04-Design/Decisions.md#store-at-definition)
 2. Virtual spill point on one path
 3. Reload at use (all paths currently)
-4. MachineLaneSSAUpdater inserts value PHIs
+4. [`MachineLaneSSAUpdater`](../../02-Components/MachineLaneSSAUpdater.md) inserts value PHIs
 
-**Tests:** `spill-multi-predecessor-join.mir`, `spill-use-before-spill.mir`, `spill-vreg-subregister.mir`
+**Tests:** [`spill-multi-predecessor-join.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-multi-predecessor-join.mir), [`spill-use-before-spill.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-use-before-spill.mir), [`spill-vreg-subregister.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-vreg-subregister.mir)
 
 ### Case 3: Subregister Spilling
 
 **Handling:**
-1. VRegMaskPair tracks lane mask
+1. [`VRegMaskPair`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/VRegMaskPair.h) tracks lane mask
 2. Only spill/reload affected lanes
-3. MachineLaneSSAUpdater handles lane merging
-4. REG_SEQUENCE reconstructs full register
+3. [`MachineLaneSSAUpdater`](../../02-Components/MachineLaneSSAUpdater.md) handles lane merging
+4. `REG_SEQUENCE` reconstructs full register
 
-**Tests:** `spill-vreg-subregister.mir`, `spill-vreg-many-lanes.mir`
+**Tests:** [`spill-vreg-subregister.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-vreg-subregister.mir), [`spill-vreg-many-lanes.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-vreg-many-lanes.mir)
 
 ---
 
@@ -437,12 +524,12 @@ graph TD
 
 | Feature | Description |
 |---------|-------------|
-| **Split-before-use** | Conditional reload based on cost model |
 | **Balanced spilling** | Spill on both paths when both have high RP |
 | **Loop-aware spilling** | Optimize spill/reload placement around loops |
 
 ---
 
-**Last Updated:** 2025-12-12
-**Design Version:** Store-at-Definition (2025-11-19)
-**Split-before-use:** Commented out pending cost model
+**Last Updated:** 2026-01-06
+**Design Version:** [Store-at-Definition](../../04-Design/Decisions.md#store-at-definition) with [LiveInterval killing](../../04-Design/Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region) (2025-12)
+**Test Count:** 10 tests (9 PASS, 1 XFAIL)
+**Source:** [`AMDGPUSSARegisterSpiller.cpp`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp)
