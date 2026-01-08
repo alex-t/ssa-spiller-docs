@@ -40,6 +40,7 @@ Documentation for SSA-based register allocation: design, implementation, and res
 - [[04-Design/Architecture|Architecture]] — high-level overview
 - [[04-Design/SSA_SPILLER_DESIGN|SSA Spiller Design]] — detailed spiller design
 - [[04-Design/NextUseAnalysis|Next Use Analysis Design]] — NUA internals
+- [[04-Design/MachineLaneSSAUpdater|MachineLaneSSAUpdater Design]] — lane-aware SSA repair
 - [[04-Design/Decisions|Design Decisions]] — key design choices and rationale
 
 ---
