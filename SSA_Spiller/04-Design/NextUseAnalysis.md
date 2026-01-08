@@ -141,7 +141,7 @@ static constexpr int64_t DeadTag = (int64_t)1 << 60;  // ~1e18
 
 When backward analysis crosses a loop entry edge (from higher loop depth to lower), two transformations apply:
 
-**Source**: [`AMDGPUNextUseAnalysis.cpp:303-323`](https://github.com/alex-t/llvm-project/blob/main/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L303-L323)
+**Source**: [`AMDGPUNextUseAnalysis.cpp:303-323`](https://github.com/alex-t/llvm-project/blob/3d16512cb05156259f07f8b3d051b72fae6591c8/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L303-L323)
 
 #### 1. Outside-Loop Uses (LoopTag Removal)
 
