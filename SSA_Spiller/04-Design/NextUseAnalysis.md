@@ -137,58 +137,71 @@ static constexpr int64_t DeadTag = (int64_t)1 << 60;  // ~1e18
 
 ---
 
-### Loop Entry Distance Truncation (Pre-Header Heuristic)
+### Loop Entry: Two Transformations
 
-**Problem**: When the query point is **outside** a loop but the next use is **inside** the loop, naively reporting the actual distance would cause poor spill candidate selection—we'd prefer to spill values with "far" uses inside loops over values with "near" uses outside.
+When backward analysis crosses a loop entry edge (from higher loop depth to lower), two transformations apply:
 
-**Solution**: Truncate the effective next-use distance to the **loop pre-header**.
+**Source**: [`AMDGPUNextUseAnalysis.cpp:303-323`](https://github.com/alex-t/llvm-project/blob/main/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L303-L323)
+
+#### 1. Outside-Loop Uses (LoopTag Removal)
+
+Uses that already have `LoopTag` (meaning they're outside the loop being exited) get the tag removed:
+
+```cpp
+if (R.second >= LoopTag) {
+  R.second -= LoopTag;  // Remove the out-of-loop penalty
+}
+```
+
+This unwraps the loop nesting—distances that were "beyond this loop" become finite again.
+
+#### 2. Inside-Loop Uses (Pre-Header Truncation)
+
+Uses **inside** the loop (no LoopTag, finite distance) get truncated to the **loop pre-header**:
+
+```cpp
+else {
+  // Inside-loop use: reset so distance = 0 at preheader bottom
+  R.second = -(int64_t)EntryOff[SuccNum];
+}
+```
+
+**Why truncate?** If we spill before a loop, the reload will be placed at the **pre-header** (not inside the loop—that would execute every iteration). Therefore, from outside the loop, the meaningful distance is "how far to the pre-header", not "how far to the actual use".
 
 ```mermaid
 flowchart TD
-    subgraph Outside["Outside Loop"]
+    subgraph Outside["Outside Loop (MBB)"]
         Query["Query Point<br/>(spill decision here)"]
     end
     
-    subgraph PreHeader["Loop Pre-Header"]
-        PHLast["Last instruction<br/>(effective NUD here)"]
+    subgraph PreHeader["Loop Pre-Header (Succ)"]
+        PHTop["PreHeader Top"]
+        PHLast["PreHeader Bottom<br/>(EntryOff[Succ] instrs)"]
+        PHTop --> PHLast
     end
     
     subgraph Loop["Loop Body"]
         Use["Actual use of %x<br/>(executes many times)"]
     end
     
-    Query -->|"5 instrs"| PHLast
-    PHLast -->|"10 instrs + iterations"| Use
+    Query -->|"distance to<br/>preheader"| PHTop
+    PHLast -->|"ignored for<br/>outside query"| Use
     
     style Query fill:#e1f5fe
     style PHLast fill:#c8e6c9,stroke:#4CAF50,stroke-width:3px
-    style Use fill:#ffcdd2
+    style Use fill:#ffcdd2,stroke:#f44336,stroke-dasharray: 5 5
 ```
 
-**Rationale**: If we spill `%x` at the query point, the reload will be placed at the **loop pre-header** (not inside the loop—that would be expensive). Therefore, the meaningful distance for spill ranking is:
+**Mathematical effect**:
+- Stored distance becomes `-EntryOff[SuccNum]`
+- After rebasing: `-EntryOff[SuccNum] + EntryOff[SuccNum] = 0`
+- Result: Materialized distance = 0 at preheader exit (last instruction before loop)
 
-```
-Effective NUD = distance(Query → PreHeader)   // NOT distance(Query → Use)
-```
-
-**Implementation**: When propagating distances from a successor at higher loop depth to a block at lower depth:
-
-```cpp
-// AMDGPUNextUseAnalysis.cpp:114-133
-if (LI->getLoopDepth(MBB) < LI->getLoopDepth(Succ)) {
-  // MBB→Succ is entering the Succ's loop
-  // Clear out the Loop-Exiting weights (remove LoopTag penalty)
-  for (auto &P : SuccDist) {
-    for (auto R : Dists) {
-      if (R.second >= LoopTag) {
-        R.second -= LoopTag;  // Reset to finite distance
-      }
-    }
-  }
-}
-```
-
-**Effect**: Uses inside loops don't accumulate infinite penalties when viewed from outside the loop—they compete fairly with other finite-distance uses, with the understanding that reload placement will be optimized to the pre-header.
+**Example**:
+- Inside loop, use is 5 instructions from preheader bottom → `Stored = -5`
+- Truncation resets to: `Stored = -EntryOff[Succ]` (say `-3` if preheader has 3 instrs)
+- From outside loop, query at preheader entry: `Materialized = -3 + 3 = 0`
+- **Effect**: Use appears "immediate" from preheader perspective—will reload there
 
 ---
 
