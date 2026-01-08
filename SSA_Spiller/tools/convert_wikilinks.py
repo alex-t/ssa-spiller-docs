@@ -388,6 +388,30 @@ def embed_image_as_base64(image_path: Path) -> Tuple[str, str, str]:
         return "", "missing", str(e)
 
 
+def make_relative_path(from_file: Path, to_file: Path) -> str:
+    """
+    Compute the relative path from one file to another.
+    
+    Args:
+        from_file: The source file (markdown file containing the link)
+        to_file: The target file (file being linked to)
+    
+    Returns:
+        Relative path string for use in markdown link
+    """
+    # Get directory of source file
+    from_dir = from_file.parent
+    
+    # Compute relative path from source directory to target file
+    try:
+        rel_path = os.path.relpath(to_file, from_dir)
+        # Normalize to forward slashes for markdown
+        return rel_path.replace(os.sep, '/')
+    except ValueError:
+        # On Windows, relpath can fail across drives
+        return str(to_file).replace(os.sep, '/')
+
+
 def convert_wikilink(
     match: re.Match,
     source_file: Path,
@@ -441,8 +465,10 @@ def convert_wikilink(
         report.add(result)
         return f"`{display}`"
     
-    # Build the link
-    rel_path = str(resolved_path)
+    # Build relative path from source file to target file
+    # GitHub resolves links relative to the file containing the link
+    source_rel = source_file.relative_to(file_index.root)
+    rel_path = make_relative_path(source_rel, resolved_path)
     encoded_path = url_encode_path(rel_path)
     
     if anchor:

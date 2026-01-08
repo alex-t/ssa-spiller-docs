@@ -94,6 +94,6 @@ Separate **when to store** (at definition, for correctness) from **where RP reli
 
 ## Related
 
-- [Store at Definition Decision](SSA_Spiller/04-Design/Decisions.md#store-at-definition)
-- [SSA Spiller Component](SSA_Spiller/02-Components/SSA_Spiller.md)
+- [Store at Definition Decision](../04-Design/Decisions.md#store-at-definition)
+- [SSA Spiller Component](../02-Components/SSA_Spiller.md)
 

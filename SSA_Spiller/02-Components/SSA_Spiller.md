@@ -60,7 +60,7 @@
 ✅ Single-store design  
 ✅ Subregister handling via VRegMaskPair  
 ✅ Reachability filtering via `isUseReachableFromDef`  
-✅ SSA repair via [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)
+✅ SSA repair via [MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)
 
 ## Pending
 
@@ -68,11 +68,11 @@
 
 ## Rationale
 
-Store-at-definition eliminates EXEC drift issues in divergent control flow. See [Design Decisions](SSA_Spiller/04-Design/Decisions.md) for details.
+Store-at-definition eliminates EXEC drift issues in divergent control flow. See [Design Decisions](../04-Design/Decisions.md) for details.
 
 ## Related
 
-- [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md) — SSA repair utility
-- [Next_Use_Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md) — spill candidate selection
-- [MIN Algorithm](SSA_Spiller/03-Concepts/MIN_Algorithm.md) — theoretical basis
-- [Detailed Design](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md)
+- [MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md) — SSA repair utility
+- [Next_Use_Analysis](Next_Use_Analysis.md) — spill candidate selection
+- [MIN Algorithm](../03-Concepts/MIN_Algorithm.md) — theoretical basis
+- [Detailed Design](../04-Design/SSA_SPILLER_DESIGN.md)

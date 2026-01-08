@@ -6,7 +6,7 @@ Hack, Grund, Goos
 Section 4.2
 
 PDF:
-[Register Allocation for Programs in SSA-Form](SSA_Spiller/06-Research/Papers/ssara.pdf)
+[Register Allocation for Programs in SSA-Form](../06-Research/Papers/ssara.pdf)
 
 ---
 
@@ -94,5 +94,5 @@ Section 4.2
 ---
 
 ## Backlinks target
-[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)
-[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)
+[SSA Destruction](../02-Components/SSA_Destruction.md)
+[SSA Destruction](../02-Components/SSA_Destruction.md)

@@ -68,10 +68,10 @@ flowchart TD
 
 ## Components
 
-- [SSA Rebuilder](SSA_Spiller/02-Components/SSA_Rebuilder.md) ⚠️
-- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
-- [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md)
-- [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)
-- [SSA Register Allocator](SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md) 📋
-- [SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md) 📋
+- [SSA Rebuilder](../02-Components/SSA_Rebuilder.md) ⚠️
+- [SSA Spiller](../02-Components/SSA_Spiller.md)
+- [Next Use Analysis](../02-Components/Next_Use_Analysis.md)
+- [MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)
+- [SSA Register Allocator](../02-Components/SSA_Register_Allocator_Impl.md) 📋
+- [SSA Destruction](../02-Components/SSA_Destruction.md) 📋
 

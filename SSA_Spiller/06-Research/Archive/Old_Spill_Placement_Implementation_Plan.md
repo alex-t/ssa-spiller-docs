@@ -127,9 +127,9 @@ This file is kept because it records:
 
 See:
 
-- [Architecture](SSA_Spiller/04-Design/Architecture.md)
+- [Architecture](../../04-Design/Architecture.md)
 - `Early SSA Spiller`
-- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
+- [SSA Spiller](../../02-Components/SSA_Spiller.md)
 ## Related (Historical)
 
-- [Old Spill Placement Implementation Plan](SSA_Spiller/06-Research/Archive/Old_Spill_Placement_Implementation_Plan.md)
+- [Old Spill Placement Implementation Plan](Old_Spill_Placement_Implementation_Plan.md)

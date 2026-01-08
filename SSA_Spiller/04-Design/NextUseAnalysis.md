@@ -13,7 +13,7 @@
 
 NextUseAnalysis computes the **distance to next use** for every virtual register (at lane-mask granularity) at every instruction. This enables optimal spill candidate selection using Belady's MIN algorithm: spill the register whose next use is furthest.
 
-See [MIN Algorithm](SSA_Spiller/03-Concepts/MIN_Algorithm.md) for theoretical background.
+See [MIN Algorithm](../03-Concepts/MIN_Algorithm.md) for theoretical background.
 
 ---
 
@@ -517,14 +517,14 @@ NextUseAnalysis runs **before** spilling. Registers created by:
 
 ...have no NUA entries. These are tracked separately via `ReloadedRegs` in the spiller.
 
-See [Static NUA Limitation](SSA_Spiller/04-Design/Decisions.md#static-next-use-analysis-limitation) in Decisions.
+See [Static NUA Limitation](Decisions.md#static-next-use-analysis-limitation) in Decisions.
 
 ---
 
 ## Related
 
-- [Next Use Analysis (Component)](SSA_Spiller/02-Components/Next_Use_Analysis.md)
-- [MIN Algorithm](SSA_Spiller/03-Concepts/MIN_Algorithm.md)
-- [SSA Spiller Design](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md) — consumer of NUA
+- [Next Use Analysis (Component)](../02-Components/Next_Use_Analysis.md)
+- [MIN Algorithm](../03-Concepts/MIN_Algorithm.md)
+- [SSA Spiller Design](SSA_SPILLER_DESIGN.md) — consumer of NUA
 
 

@@ -7,7 +7,7 @@ A **perfect elimination order (PEO)** of an undirected graph is an ordering of v
 
 Graphs that admit a PEO are exactly the **chordal graphs**.
 
-See: [Chordal Graphs](SSA_Spiller/03-Concepts/Chordal_Graphs.md).
+See: [Chordal Graphs](Chordal_Graphs.md).
 
 ## Why it matters for register allocation
 If the (value) interference graph is chordal, then:

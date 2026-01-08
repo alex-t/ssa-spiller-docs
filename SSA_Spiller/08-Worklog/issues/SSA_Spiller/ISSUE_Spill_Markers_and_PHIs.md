@@ -13,7 +13,7 @@ Key SSA properties:
 
 After SSA destruction, PHIs are lowered into COPY operations placed at the **end of predecessor blocks**.
 
-[Register Allocation for Programs in SSA-Form](SSA_Spiller/06-Research/Papers/ssara.pdf)  by Sebastian Hack, Daniel Grund, and Gerhard Goos discusses techniques for *zero-copy SSA deconstruction*.  
+[Register Allocation for Programs in SSA-Form](../../../06-Research/Papers/ssara.pdf)  by Sebastian Hack, Daniel Grund, and Gerhard Goos discusses techniques for *zero-copy SSA deconstruction*.  
 In our implementation we deliberately take a **conservative model**.
 
 ---
@@ -66,7 +66,7 @@ When enabled:
 - It marks the point where a spilled register becomes dead
 - The marker is placed **immediately before the instruction that triggered spilling**
 
-This mechanism is **debug-only** and does not affect codegen [SSA_SPILLER_DESIGN](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md#virtual-spill-point-and-si_virtual_spill_marker).
+This mechanism is **debug-only** and does not affect codegen [SSA_SPILLER_DESIGN](../../../04-Design/SSA_SPILLER_DESIGN.md#virtual-spill-point-and-si_virtual_spill_marker).
 
 ---
 

@@ -45,7 +45,7 @@ This implies the interference graph is **chordal** (or close enough), enabling e
 
 1. **Build analyses**:
    - Dominator tree (`MachineDomTree`)
-   - Per-instruction next-use info ([Next_Use_Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md))
+   - Per-instruction next-use info ([Next_Use_Analysis](Next_Use_Analysis.md))
    - Register class constraints (`SIRegisterInfo`)
 
 2. **Traverse dominator tree**:
@@ -61,10 +61,10 @@ This implies the interference graph is **chordal** (or close enough), enabling e
 
 ## Spilling Model
 
-Reuses the [SSA_Spiller](SSA_Spiller/02-Components/SSA_Spiller.md) model:
+Reuses the [SSA_Spiller](SSA_Spiller.md) model:
 - Store at definition (correctness under EXEC)
 - Virtual spill point (where RP relief is intended)
-- Reload placement + SSA repair via [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)
+- Reload placement + SSA repair via [MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)
 
 **Key difference**: Spilling is no longer a separate pre-pass; it becomes an on-demand action triggered by register unavailability during allocation.
 
@@ -86,7 +86,7 @@ Reuses the [SSA_Spiller](SSA_Spiller/02-Components/SSA_Spiller.md) model:
 
 ## Theory
 
-- [Chordal Graphs](SSA_Spiller/03-Concepts/Chordal_Graphs.md)
+- [Chordal Graphs](../03-Concepts/Chordal_Graphs.md)
 - `Perfect Elimination Order (PEO)`
 
 ## Papers

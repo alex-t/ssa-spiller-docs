@@ -5,7 +5,7 @@ Scope: Next Use Analysis optimization
 Audience: LLVM backend / SSA RA development  
 Origin: internal design note (“Persistent Map Design.pdf”)
 PDF source:
-[Persistent Map Design.pdf](SSA_Spiller/06-Research/Notes/Persistent_Map_Design.pdf)
+[Persistent Map Design.pdf](../06-Research/Notes/Persistent_Map_Design.pdf)
 
 
 ---
@@ -263,15 +263,15 @@ This provides a principled improvement path for Next Use Analysis.
 
 ## Related
 
-- [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md)
+- [Next Use Analysis](../02-Components/Next_Use_Analysis.md)
     
 - `Next Use Analysis Tests`
     
-- [Architecture](SSA_Spiller/04-Design/Architecture.md)
+- [Architecture](Architecture.md)
     
-- [MIN Algorithm](SSA_Spiller/03-Concepts/MIN_Algorithm.md)
+- [MIN Algorithm](../03-Concepts/MIN_Algorithm.md)
     
-- [Open problems](SSA_Spiller/10-Backlog/Open_problems.md)
+- [Open problems](../10-Backlog/Open_problems.md)
     
 
 ---

@@ -20,9 +20,9 @@ This document describes the **current** register spilling pass for AMDGPU that o
 The SSA spiller is a MachineFunction pass that:
 - Tracks register pressure (RP) while scanning instructions.
 - When RP exceeds a limit, selects one or more **spill candidates** using a [Belady-style next-use heuristic](../03-Concepts/MIN_Algorithm.md).
-- Stores spilled values [**at definition**](Decisions.md#store-at-definition) to avoid [EXEC drift](SSA_Spiller/03-Concepts/EXEC_Drift.md) issues.
+- Stores spilled values [**at definition**](Decisions.md#store-at-definition) to avoid [EXEC drift](../03-Concepts/EXEC_Drift.md) issues.
 - Computes a [**virtual spill point**](#virtual-spill-point-and-si_virtual_spill_marker) (where the value is considered "logically dead" for RP relief).
-- Kills spilled live interval in the CFG subgraph dominated by the kill point ([Design Decision](SSA_Spiller/04-Design/Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region)).
+- Kills spilled live interval in the CFG subgraph dominated by the kill point ([Design Decision](Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region)).
 - Inserts reloads and repairs SSA form using [`MachineLaneSSAUpdater`](../02-Components/MachineLaneSSAUpdater.md).
 - Shrinks live intervals after repairs to reflect the new SSA use graph.
 

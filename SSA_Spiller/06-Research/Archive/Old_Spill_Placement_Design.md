@@ -162,8 +162,8 @@ This design is **NOT** to be revived.
 For current strategy, see:
 
 - `Early SSA Spiller`
-- [Architecture](SSA_Spiller/04-Design/Architecture.md)
-- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
+- [Architecture](../../04-Design/Architecture.md)
+- [SSA Spiller](../../02-Components/SSA_Spiller.md)
 
 ---
 
@@ -175,5 +175,5 @@ Original file:
 Archived faithfully.
 ## Related (Historical)
 
-- [Old Spill Placement Implementation Plan](SSA_Spiller/06-Research/Archive/Old_Spill_Placement_Implementation_Plan.md)
+- [Old Spill Placement Implementation Plan](Old_Spill_Placement_Implementation_Plan.md)
 

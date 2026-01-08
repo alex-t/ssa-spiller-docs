@@ -49,13 +49,13 @@ PHI elimination is trivial in theory (insert copies on predecessor edges), but d
 
 ## Theory
 
-- [SSA Destruction (Concept)](SSA_Spiller/02-Components/SSA_Destruction.md)
+- [SSA Destruction (Concept)](SSA_Destruction.md)
 - `PHI Copies & Permutations`
 
 ## Related
 
-- [SSA_Rebuilder](SSA_Spiller/02-Components/SSA_Rebuilder.md) — inverse operation (SSA reconstruction)
-- [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md) — lane-aware PHI handling
+- [SSA_Rebuilder](SSA_Rebuilder.md) — inverse operation (SSA reconstruction)
+- [MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md) — lane-aware PHI handling
 
 
 

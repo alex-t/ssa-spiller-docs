@@ -46,12 +46,12 @@ This pass disappears when:
 
 ## Dependencies
 
-- [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md) — used for SSA repair
+- [MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md) — used for SSA repair
 
 ## Related
 
-- [SSA_Spiller](SSA_Spiller/02-Components/SSA_Spiller.md) — consumer of SSA form
-- [PHI T-Transform](SSA_Spiller/03-Concepts/PHI_T-Transform.md) — transformation used during SSA repair
+- [SSA_Spiller](SSA_Spiller.md) — consumer of SSA form
+- [PHI T-Transform](../03-Concepts/PHI_T-Transform.md) — transformation used during SSA repair
 
 
 

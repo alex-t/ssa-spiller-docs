@@ -56,13 +56,13 @@ The SSA Register Allocation pipeline maintains SSA form throughout register allo
 
 | Component | Design Document | Status |
 |-----------|-----------------|--------|
-| **SSA Spiller** | [SSA_SPILLER_DESIGN](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md) | Active |
-| **MachineLaneSSAUpdater** | [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md) | Active |
-| **Next Use Analysis** | [Persistent_Map_for_NUA](SSA_Spiller/04-Design/Persistent_Map_for_NUA.md) | Active |
+| **SSA Spiller** | [SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md) | Active |
+| **MachineLaneSSAUpdater** | [MachineLaneSSAUpdater](MachineLaneSSAUpdater.md) | Active |
+| **Next Use Analysis** | [Persistent_Map_for_NUA](Persistent_Map_for_NUA.md) | Active |
 
 ### Design Decisions
 
-- [Decisions](SSA_Spiller/04-Design/Decisions.md) — Key design decisions and their rationale
+- [Decisions](Decisions.md) — Key design decisions and their rationale
 
 ---
 
@@ -80,7 +80,7 @@ All spilling and SSA repair operations are lane-aware, tracking `(VReg, LaneBitm
 
 ### 4. SSA Preservation
 The spiller maintains SSA form by:
-- Using [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md) to repair SSA after inserting reloads
+- Using [MachineLaneSSAUpdater](MachineLaneSSAUpdater.md) to repair SSA after inserting reloads
 - Inserting PHIs at IDF blocks when needed
 - Rewriting uses to correct SSA values
 
@@ -98,7 +98,7 @@ The SSA Rebuilder restores SSA form after the existing greedy register allocator
 - The greedy allocator will eventually be replaced with a native SSA-based allocator
 - Once that happens, SSA form will be preserved throughout, eliminating the need for rebuilding
 
-See: [Pipeline: SSA Rebuilder](SSA_Spiller/02-Components/SSA_Rebuilder.md)
+See: [Pipeline: SSA Rebuilder](../02-Components/SSA_Rebuilder.md)
 
 ---
 
@@ -115,4 +115,4 @@ See: [Pipeline: SSA Rebuilder](SSA_Spiller/02-Components/SSA_Rebuilder.md)
 
 ## Historical Designs (Rejected)
 
-- [Old_Spill_Placement_Design](SSA_Spiller/06-Research/Archive/Old_Spill_Placement_Design.md) — Earlier approach before store-at-definition strategy
+- [Old_Spill_Placement_Design](../06-Research/Archive/Old_Spill_Placement_Design.md) — Earlier approach before store-at-definition strategy

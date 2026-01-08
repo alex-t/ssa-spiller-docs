@@ -5,7 +5,7 @@ An undirected graph is **chordal** if every cycle of length \(\ge 4\) has a **ch
 (an edge connecting two non-consecutive vertices in the cycle).
 
 Equivalent characterization:
-- A graph is chordal iff it has a [Perfect Elimination Order (PEO)](SSA_Spiller/03-Concepts/Perfect_Elimination_Order_%28PEO%29.md).
+- A graph is chordal iff it has a [Perfect Elimination Order (PEO)](Perfect_Elimination_Order_%28PEO%29.md).
 
 ## Why chordal graphs show up in SSA regalloc
 SSA form + dominance-shaped liveness tends to produce interference structures that are chordal (or
