@@ -137,6 +137,154 @@ static constexpr int64_t DeadTag = (int64_t)1 << 60;  // ~1e18
 
 ---
 
+### Loop Entry Distance Truncation (Pre-Header Heuristic)
+
+**Problem**: When the query point is **outside** a loop but the next use is **inside** the loop, naively reporting the actual distance would cause poor spill candidate selection—we'd prefer to spill values with "far" uses inside loops over values with "near" uses outside.
+
+**Solution**: Truncate the effective next-use distance to the **loop pre-header**.
+
+```mermaid
+flowchart TD
+    subgraph Outside["Outside Loop"]
+        Query["Query Point<br/>(spill decision here)"]
+    end
+    
+    subgraph PreHeader["Loop Pre-Header"]
+        PHLast["Last instruction<br/>(effective NUD here)"]
+    end
+    
+    subgraph Loop["Loop Body"]
+        Use["Actual use of %x<br/>(executes many times)"]
+    end
+    
+    Query -->|"5 instrs"| PHLast
+    PHLast -->|"10 instrs + iterations"| Use
+    
+    style Query fill:#e1f5fe
+    style PHLast fill:#c8e6c9,stroke:#4CAF50,stroke-width:3px
+    style Use fill:#ffcdd2
+```
+
+**Rationale**: If we spill `%x` at the query point, the reload will be placed at the **loop pre-header** (not inside the loop—that would be expensive). Therefore, the meaningful distance for spill ranking is:
+
+```
+Effective NUD = distance(Query → PreHeader)   // NOT distance(Query → Use)
+```
+
+**Implementation**: When propagating distances from a successor at higher loop depth to a block at lower depth:
+
+```cpp
+// AMDGPUNextUseAnalysis.cpp:114-133
+if (LI->getLoopDepth(MBB) < LI->getLoopDepth(Succ)) {
+  // MBB→Succ is entering the Succ's loop
+  // Clear out the Loop-Exiting weights (remove LoopTag penalty)
+  for (auto &P : SuccDist) {
+    for (auto R : Dists) {
+      if (R.second >= LoopTag) {
+        R.second -= LoopTag;  // Reset to finite distance
+      }
+    }
+  }
+}
+```
+
+**Effect**: Uses inside loops don't accumulate infinite penalties when viewed from outside the loop—they compete fairly with other finite-distance uses, with the understanding that reload placement will be optimized to the pre-header.
+
+---
+
+### Offset Materialization and EntryOff
+
+The analysis uses a **relative offset scheme** to efficiently propagate distances across blocks. Understanding this is key to interpreting NUA results.
+
+#### Frame of Reference
+
+```mermaid
+flowchart LR
+    subgraph MBB["Current Block (MBB)"]
+        direction TB
+        Top["Block Top<br/>EntryOff[MBB] = 5"]
+        I1["instr 1"]
+        I2["instr 2<br/>InstrOffset = 3"]
+        I3["instr 3"]
+        I4["instr 4"]
+        Bot["Block Bottom<br/>(frame origin)"]
+        
+        Top --> I1 --> I2 --> I3 --> I4 --> Bot
+    end
+    
+    subgraph Succ["Successor Block"]
+        direction TB
+        STop["Block Top<br/>EntryOff[Succ] = 3"]
+        SI1["instr 1"]
+        SI2["instr 2"]
+        SI3["instr 3: use %x"]
+        SBot["Block Bottom"]
+        
+        STop --> SI1 --> SI2 --> SI3 --> SBot
+    end
+    
+    Bot -->|"edge"| STop
+```
+
+#### Key Data Structures
+
+| Field | Meaning |
+|-------|---------|
+| `EntryOff[MBB]` | Total instruction count in MBB (distance from top to bottom) |
+| `InstrOffset[MI]` | Distance from MI to block bottom (decreases as you go down) |
+| `Stored distance` | Negative offset from snapshot point to use (relative) |
+
+#### Rebasing Formula
+
+When merging distances from successor into current block:
+
+```cpp
+// AMDGPUNextUseAnalysis.h:31-35
+static inline int64_t rebaseFromSucc(int64_t SuccStored, 
+                                     unsigned SuccEntryOff,
+                                     int64_t EdgeWeight) {
+  return SuccStored + SuccEntryOff + EdgeWeight;
+}
+```
+
+#### Worked Example
+
+```mermaid
+flowchart TB
+    subgraph MBB["MBB (5 instructions)"]
+        direction TB
+        M0["Offset=5 (top)"]
+        M1["MI: Offset=3<br/>Query point"]
+        M2["Offset=0 (bottom)"]
+        M0 --> M1 --> M2
+    end
+    
+    subgraph Succ["Succ (3 instructions)"]
+        direction TB
+        S0["Offset=3 (top)"]
+        S1["use %x<br/>Stored = -1"]
+        S2["Offset=0 (bottom)"]
+        S0 --> S1 --> S2
+    end
+    
+    M2 -->|"EntryOff[Succ]=3"| S0
+    
+    subgraph Calc["Distance Calculation"]
+        C1["At MI (Offset=3):"]
+        C2["Rebased = -1 + 3 + 0 = 2<br/>(succ distance + succ entry)"]
+        C3["Materialized = 2 + 3 = 5<br/>(rebased + snapshot offset)"]
+        C1 --> C2 --> C3
+    end
+```
+
+**Step-by-step**:
+1. Use `%x` in Succ has `Stored = -1` (1 instruction before block bottom)
+2. Rebase into MBB frame: `-1 + EntryOff[Succ](3) = 2`
+3. At query MI with `InstrOffset = 3`: `Materialized = 2 + 3 = 5`
+4. Result: Next use of `%x` is **5 instructions** from query point
+
+---
+
 ## Main Workflow: `analyze()`
 
 **Source**: [`analyze()`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L70-L221)
