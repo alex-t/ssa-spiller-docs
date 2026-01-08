@@ -236,22 +236,20 @@ The analysis uses a **relative offset scheme** to efficiently propagate distance
 #### Frame of Reference
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph MBB["Current Block (MBB)"]
-        direction TB
-        Top["Block Top<br/>EntryOff[MBB] = 5"]
+        Top["Block Top — EntryOff[MBB] = 5"]
         I1["instr 1"]
-        I2["instr 2<br/>InstrOffset = 3"]
+        I2["instr 2 — InstrOffset = 3"]
         I3["instr 3"]
         I4["instr 4"]
-        Bot["Block Bottom<br/>(frame origin)"]
+        Bot["Block Bottom (frame origin)"]
         
         Top --> I1 --> I2 --> I3 --> I4 --> Bot
     end
     
     subgraph Succ["Successor Block"]
-        direction TB
-        STop["Block Top<br/>EntryOff[Succ] = 3"]
+        STop["Block Top — EntryOff[Succ] = 3"]
         SI1["instr 1"]
         SI2["instr 2"]
         SI3["instr 3: use %x"]
@@ -260,7 +258,7 @@ flowchart LR
         STop --> SI1 --> SI2 --> SI3 --> SBot
     end
     
-    Bot -->|"edge"| STop
+    Bot -->|"CFG edge"| STop
 ```
 
 #### Key Data Structures
