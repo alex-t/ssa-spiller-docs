@@ -193,15 +193,39 @@ flowchart TD
 ```
 
 **Mathematical effect**:
-- Stored distance becomes `-EntryOff[SuccNum]`
-- After rebasing: `-EntryOff[SuccNum] + EntryOff[SuccNum] = 0`
-- Result: Materialized distance = 0 at preheader exit (last instruction before loop)
+- Stored distance (in successor's frame) becomes `-EntryOff[SuccNum]`
+- After rebasing into MBB's frame: `-EntryOff[SuccNum] + EntryOff[SuccNum] = 0`
+- Result: Materialized distance = **0 at preheader bottom** (last instruction before loop entry)
 
 **Example**:
-- Inside loop, use is 5 instructions from preheader bottom → `Stored = -5`
-- Truncation resets to: `Stored = -EntryOff[Succ]` (say `-3` if preheader has 3 instrs)
-- From outside loop, query at preheader entry: `Materialized = -3 + 3 = 0`
-- **Effect**: Use appears "immediate" from preheader perspective—will reload there
+
+```mermaid
+flowchart TD
+    subgraph MBB["Preheader (MBB, outside loop)"]
+        direction TB
+        PHTop["Entry (InstrOffset=3)"]
+        PHMid["... 3 instructions ..."]
+        PHBot["Bottom (InstrOffset=0)<br/>Distance to in-loop use = 0 here"]
+    end
+    
+    subgraph Succ["Loop Header (Succ, inside loop)"]
+        direction TB
+        LHTop["Entry"]
+        Use["use %x somewhere in loop"]
+    end
+    
+    PHTop --> PHMid --> PHBot
+    PHBot -->|"loop entry edge"| LHTop
+    LHTop --> Use
+```
+
+- Original: use inside loop has some distance in Succ's frame
+- Truncation sets: `Stored = -EntryOff[Succ]` (e.g., `-5` if loop header has 5 instrs)
+- After merge into MBB: `Rebased = -5 + 5 = 0` (stored in MBB's frame)
+- Query at **preheader bottom** (InstrOffset=0): `Materialized = 0 + 0 = 0`
+- Query at **preheader entry** (InstrOffset=3): `Materialized = 0 + 3 = 3`
+
+**Effect**: From preheader entry, the in-loop use appears **3 instructions away** (= distance to preheader bottom). This correctly models that a reload would be placed at preheader bottom, not inside the loop.
 
 ---
 
