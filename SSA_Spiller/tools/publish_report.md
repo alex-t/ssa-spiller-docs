@@ -1,6 +1,6 @@
 # Wikilink Conversion Report
 
-**Generated:** 2026-01-08 15:16:27
+**Generated:** 2026-01-08 15:22:51
 
 ## Summary
 
@@ -33,31 +33,31 @@ These image files were not found:
 
 These links matched multiple files (first match used):
 
-- `SSA_Spiller/README.md:31` - `02-Components/MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/README.md:34` - `02-Components/SSA_Destruction` → `[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)`
-- `SSA_Spiller/README.md:41` - `04-Design/SSA_SPILLER_DESIGN` → `[SSA Spiller Design](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md)`
-- `SSA_Spiller/README.md:43` - `04-Design/MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater Design](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/01-Pipeline/Current_Pipeline.md:74` - `../02-Components/MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/01-Pipeline/Current_Pipeline.md:76` - `../02-Components/SSA_Destruction` → `[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)`
-- `SSA_Spiller/01-Pipeline/Future_Pipeline.md:53` - `../02-Components/MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/01-Pipeline/Future_Pipeline.md:55` - `../02-Components/SSA_Destruction` → `[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)`
-- `SSA_Spiller/04-Design/Architecture.md:59` - `SSA_SPILLER_DESIGN` → `[SSA_SPILLER_DESIGN](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md)`
-- `SSA_Spiller/04-Design/Architecture.md:60` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/04-Design/Architecture.md:83` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/04-Design/NextUseAnalysis.md:528` - `SSA_SPILLER_DESIGN` → `[SSA Spiller Design](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md)`
-- `SSA_Spiller/04-Design/Decisions.md:170` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/02-Components/SSA_Destruction.md:52` - `../03-Concepts/SSA_Destruction` → `[SSA Destruction (Concept)](SSA_Spiller/02-Components/SSA_Destruction.md)`
-- `SSA_Spiller/02-Components/SSA_Destruction.md:58` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md:67` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/02-Components/SSA_Rebuilder.md:49` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/02-Components/SSA_Spiller.md:63` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/02-Components/SSA_Spiller.md:75` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/02-Components/SSA_Spiller.md:78` - `../04-Design/SSA_SPILLER_DESIGN` → `[Detailed Design](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md)`
-- `SSA_Spiller/03-Concepts/SSA_Destruction.md:97` - `SSA_Spiller/02-Components/SSA Destruction` → `[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)`
-- `SSA_Spiller/03-Concepts/SSA_Destruction.md:98` - `SSA_Spiller/01-Pipeline/SSA Destruction` → `[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)`
-- `SSA_Spiller/08-Worklog/issues/SSA_Spiller/ISSUE_Spill_Markers_and_PHIs.md:69` - `SSA_SPILLER_DESIGN` → `[SSA_SPILLER_DESIGN](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md#virtual-spill-point-and-si_virtual_spill_marker)`
-- `SSA_Spiller/08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md:6` - `02-Components/MachineLaneSSAUpdater` → `[Machine Lane SSA Updater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
-- `SSA_Spiller/08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md:19` - `02-Components/MachineLaneSSAUpdater` → `[Machine Lane SSA Updater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/README.md:31` - `02-Components/MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/README.md:34` - `02-Components/SSA_Destruction` → `[SSA Destruction](02-Components/SSA_Destruction.md)`
+- `SSA_Spiller/README.md:41` - `04-Design/SSA_SPILLER_DESIGN` → `[SSA Spiller Design](04-Design/SSA_SPILLER_DESIGN.md)`
+- `SSA_Spiller/README.md:43` - `04-Design/MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater Design](04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/01-Pipeline/Current_Pipeline.md:74` - `../02-Components/MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/01-Pipeline/Current_Pipeline.md:76` - `../02-Components/SSA_Destruction` → `[SSA Destruction](../02-Components/SSA_Destruction.md)`
+- `SSA_Spiller/01-Pipeline/Future_Pipeline.md:53` - `../02-Components/MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/01-Pipeline/Future_Pipeline.md:55` - `../02-Components/SSA_Destruction` → `[SSA Destruction](../02-Components/SSA_Destruction.md)`
+- `SSA_Spiller/04-Design/Architecture.md:59` - `SSA_SPILLER_DESIGN` → `[SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md)`
+- `SSA_Spiller/04-Design/Architecture.md:60` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/04-Design/Architecture.md:83` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/04-Design/NextUseAnalysis.md:528` - `SSA_SPILLER_DESIGN` → `[SSA Spiller Design](SSA_SPILLER_DESIGN.md)`
+- `SSA_Spiller/04-Design/Decisions.md:170` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/02-Components/SSA_Destruction.md:52` - `../03-Concepts/SSA_Destruction` → `[SSA Destruction (Concept)](SSA_Destruction.md)`
+- `SSA_Spiller/02-Components/SSA_Destruction.md:58` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md:67` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/02-Components/SSA_Rebuilder.md:49` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/02-Components/SSA_Spiller.md:63` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/02-Components/SSA_Spiller.md:75` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/02-Components/SSA_Spiller.md:78` - `../04-Design/SSA_SPILLER_DESIGN` → `[Detailed Design](../04-Design/SSA_SPILLER_DESIGN.md)`
+- `SSA_Spiller/03-Concepts/SSA_Destruction.md:97` - `SSA_Spiller/02-Components/SSA Destruction` → `[SSA Destruction](../02-Components/SSA_Destruction.md)`
+- `SSA_Spiller/03-Concepts/SSA_Destruction.md:98` - `SSA_Spiller/01-Pipeline/SSA Destruction` → `[SSA Destruction](../02-Components/SSA_Destruction.md)`
+- `SSA_Spiller/08-Worklog/issues/SSA_Spiller/ISSUE_Spill_Markers_and_PHIs.md:69` - `SSA_SPILLER_DESIGN` → `[SSA_SPILLER_DESIGN](../../../04-Design/SSA_SPILLER_DESIGN.md#virtual-spill-point-and-si_virtual_spill_marker)`
+- `SSA_Spiller/08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md:6` - `02-Components/MachineLaneSSAUpdater` → `[Machine Lane SSA Updater](../../../04-Design/MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md:19` - `02-Components/MachineLaneSSAUpdater` → `[Machine Lane SSA Updater](../../../04-Design/MachineLaneSSAUpdater.md)`
 
 ## ❌ Not Found Links
 
