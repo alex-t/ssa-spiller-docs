@@ -16,8 +16,9 @@ The SSA Register Allocation pipeline maintains SSA form throughout register allo
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  SSA Rebuilder (temporary)                                      │
-│  - Restores SSA after greedy regalloc destroys it               │
-│  - Will be removed when native SSA allocator is ready           │
+│  - Restores SSA after PHI elimination pass destroys it          │
+│  - Will be removed when all MIR passes before RA are ready      | 
+|          to work on SSA-form MIR.                               |
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -25,7 +26,6 @@ The SSA Register Allocation pipeline maintains SSA form throughout register allo
 │  Early SSA Spiller                                              │
 │  - Reduces register pressure while preserving SSA               │
 │  - Uses Belady/MIN algorithm for spill selection                │
-│  - Store-at-definition strategy                                 │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
