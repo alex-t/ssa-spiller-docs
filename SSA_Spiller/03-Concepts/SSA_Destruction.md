@@ -94,5 +94,5 @@ Section 4.2
 ---
 
 ## Backlinks target
-[SSA Destruction](SSA_Spiller/01-Pipeline/SSA_Destruction.md)
-[SSA Destruction](SSA_Spiller/01-Pipeline/SSA_Destruction.md)
+[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)
+[SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md)

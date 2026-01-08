@@ -1,84 +1,77 @@
-# SSA Register Allocation on SSA Form (AMDGPU)
+# SSA-Based Register Allocation (AMDGPU)
 
-Central documentation vault for SSA-based register allocation design,
-implementation and research.
-
----
-
-## 📦 Overview
-- `Project Summary`
-- `Scope and Goals`
-- [Status](SSA_Spiller/08-Worklog/issues/Status.md)
+Documentation for SSA-based register allocation: design, implementation, and research.
 
 ---
 
-## 🚦 Pipeline
-- [SSA Rebuilder](SSA_Spiller/01-Pipeline/SSA_Rebuilder.md)
-- [Early SSA Spiller](SSA_Spiller/01-Pipeline/Early_SSA_Spiller.md)
-- [SSA Register Allocator](SSA_Spiller/01-Pipeline/SSA_Register_Allocator.md)
-- [SSA Destruction](SSA_Spiller/01-Pipeline/SSA_Destruction.md)
+## Status
+
+| Component | Status |
+|-----------|--------|
+| **SSA Spiller** | ✅ Implemented |
+| **NextUseAnalysis** | ✅ Implemented |
+| **MachineLaneSSAUpdater** | ✅ Implemented |
+| SSA Rebuilder | ⚠️ Temporary |
+| SSA Register Allocator | 📋 Not yet implemented |
+| SSA Destruction | 📋 Not yet implemented |
 
 ---
 
-## 🔩 Components
-- [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md)
-- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
-- [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)
-- `SSA Rebuilder Pass`
-- [SSA Register Allocator Impl](SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md)
-- `SSA Decomposer`
+## Pipeline
+
+- [Current Pipeline](SSA_Spiller/01-Pipeline/Current_Pipeline.md) — with SSA Rebuilder (temporary)
+- [Future Pipeline](SSA_Spiller/01-Pipeline/Future_Pipeline.md) — target architecture
 
 ---
 
-## 🧠 Concepts
-- `Next Use Distance`
-- `MIN Algorithm (Belady)`
+## Components
+
+- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md) — store-at-definition spilling
+- [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md) — Belady-style distance computation
+- [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md) — lane-aware SSA repair
+- [SSA Rebuilder](SSA_Spiller/02-Components/SSA_Rebuilder.md) ⚠️ — temporary SSA reconstruction
+- [SSA Register Allocator](SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md) 📋
+- [SSA Destruction](SSA_Spiller/02-Components/SSA_Destruction.md) 📋
+
+---
+
+## Design
+
+- [Architecture](SSA_Spiller/04-Design/Architecture.md) — high-level overview
+- [SSA Spiller Design](SSA_Spiller/04-Design/SSA_SPILLER_DESIGN.md) — detailed spiller design
+- [Next Use Analysis Design](SSA_Spiller/04-Design/NextUseAnalysis.md) — NUA internals
+- [MachineLaneSSAUpdater Design](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md) — lane-aware SSA repair
+- [Design Decisions](SSA_Spiller/04-Design/Decisions.md) — key design choices and rationale
+
+---
+
+## Concepts
+
+- [MIN Algorithm (Belady)](SSA_Spiller/03-Concepts/MIN_Algorithm.md) — optimal spill selection
+- [EXEC Drift](SSA_Spiller/03-Concepts/EXEC_Drift.md) — divergent control flow correctness
 - [PHI T-Transform](SSA_Spiller/03-Concepts/PHI_T-Transform.md)
-- [Perfect Elimination Order (PEO)](SSA_Spiller/03-Concepts/Perfect_Elimination_Order_%28PEO%29.md)
-- `PHI Copies and Permutations`
-- `SSA Deconstruction Theory`
+- [Perfect Elimination Order](SSA_Spiller/03-Concepts/Perfect_Elimination_Order_%28PEO%29.md)
+- [Chordal Graphs](SSA_Spiller/03-Concepts/Chordal_Graphs.md)
 
 ---
 
-## 🎯 Design
-- [Architecture](SSA_Spiller/04-Design/Architecture.md)
-- `Data Flow`
-- `Control Flow and Dominance`
-- `Invariants and Guarantees`
-- `Design Decisions`
+## Testing
+
+- [SSA Spiller Tests](SSA_Spiller/05-Testing/SSA_Spiller/SSA_SPILLER_TEST_PATTERNS.md) — 10 MIR test patterns
+- [Next Use Analysis Tests](SSA_Spiller/05-Testing/Next_Use_Analysis/NUA_TEST_PATTERNS.md) — 17 MIR test patterns
 
 ---
 
-## 🧪 Testing
-- `Next Use Analysis Tests`
-- `SSA Spiller Tests`
-- `Validation Strategy`
+## Research
+
+- `Papers` — academic references
+- `Archive` — historical designs
 
 ---
 
-## 📚 Research
-- `Papers`
-- [Notes](SSA_Spiller/08-Worklog/NOTES.md)
+## Quick Links
 
----
-
-## 🗺 Diagrams
-- `Current`
-- `Historical`
-
----
-
-## 📝 Worklog
-- `History`
-
----
-
-## 🔌 Integration
-- `LLVM Pipeline`
-
----
-
-## 🚧 Backlog
-- [Open Problems](SSA_Spiller/10-Backlog/Open_problems.md)
-- [TODO](SSA_Spiller/08-Worklog/TODO.md)
-- `Ideas`
+**Source Code** (GitHub):
+- [`AMDGPUSSARegisterSpiller.cpp`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp)
+- [`AMDGPUNextUseAnalysis.cpp`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp)
+- [`MachineLaneSSAUpdater.cpp`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp)

@@ -128,7 +128,7 @@ This file is kept because it records:
 See:
 
 - [Architecture](SSA_Spiller/04-Design/Architecture.md)
-- [Early SSA Spiller](SSA_Spiller/01-Pipeline/Early_SSA_Spiller.md)
+- `Early SSA Spiller`
 - [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
 ## Related (Historical)
 

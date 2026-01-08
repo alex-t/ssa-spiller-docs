@@ -1,71 +1,102 @@
-# SSA Register Allocator Impl
+# SSA Register Allocator
 
-Implementation-mapping note for the SSA register allocator described in:
-[SSA Register Allocator](SSA_Spiller/01-Pipeline/SSA_Register_Allocator.md).
+**SSA-based register allocation for AMDGPU Machine IR**
 
-This is intentionally “symbolic mapping” (like your spiller docs): it names *expected* LLVM/AMDGPU
-integration points and the responsibilities of each component.
+## Status
 
-## Scope
-- Allocate physical registers for MachineIR SSA values in AMDGPU.
-- When constrained, perform SSA-aware spills/reloads while keeping IR in SSA.
-- Defer SSA destruction to the final lowering stage.
+📋 **Draft** — documentation-only, not yet implemented.
 
-## Expected LLVM integration points (symbolic)
-- **Pass placement (target pipeline)**: after SSA repair/rebuilder, before SSA destruction.
-- **Core dependencies**:
-  - `MachineRegisterInfo` (vreg graph, defs/uses)
-  - `MachineDominatorTree` (dom traversal + dominance queries)
-  - Target register info (`SIRegisterInfo`, `SIInstrInfo`)
-  - Next-use queries: [Next Use Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md)
-  - SSA repair utilities: MachineLaneSSAUpdater (see SSA spiller docs)
+---
 
-## Proposed internal structure
+## Input MIR
 
-### (A) Traversal / driver
-Responsibilities:
-- Choose dom-tree traversal strategy.
-- Maintain an active set of live values (lane-aware).
-- Invoke allocation for each def when entering its live region.
+**SSA-form Machine IR**
+- Register pressure within limits (post-spilling)
+- Virtual registers only
+- Valid LiveIntervals
 
-### (B) Allocation policy
-Responsibilities:
-- Find a free physical register compatible with the value’s register class / tuple constraints.
-- If none is available:
-  - select a victim using next-use (Belady-like) information
-  - trigger spill/eviction
+## Output MIR
 
-### (C) Spill/evict mechanism (reuse SSA spiller model)
-Do *not* invent a second spilling model. Reuse the existing model:
-- store-at-definition
-- virtual spill point
-- reload placement
-- SSA repair
+**SSA-form Machine IR with physical registers**
+- All virtual registers assigned to physical registers
+- SSA form still preserved
+- PHI nodes use physical registers
+- Ready for SSA destruction
 
-Links:
-- [SSA Spiller](SSA_Spiller/02-Components/SSA_Spiller.md)
-- `04-Design/Architecture.md` (“where stored” vs “when freed”)
+---
 
-### (D) Lane/subregister handling
-AMDGPU requires lane-aware reasoning:
-- represent live/allocated items as (VReg, LaneMask)
-- allow partial eviction/spill if the value is larger than needed (when legal)
+## Strategy
 
-## Data structures (doc-level)
-- **Active set**: lane-aware set of currently-live assigned values.
-- **Assignment map**: vreg (or vreg+mask) → physreg/tuple.
-- **Free lists**: per reg class, track available registers (and tuple availability).
-- **Next-use interface**: query “distance” for candidate selection.
+- **Graph-free allocation**: avoid explicit interference graph construction
+- **Dominator-based**: operate over the dominator tree, not program order
+- **Chordal/PEO-based**: greedy coloring is optimal on chordal graphs when processed in `Perfect Elimination Order (PEO)`
 
-## Failure modes / invariants
-- Must not violate MachineIR SSA invariants during on-demand spills/reloads.
-- Must keep EXEC-related correctness: prefer store-at-definition when spilling.
-- Must keep lane masks consistent across repair (delegate to MachineLaneSSAUpdater).
+## Why SSA Changes RegAlloc
 
-## Open questions (implementation planning)
-- Exact boundary between “allocator” and “spiller” code:
-  - embed spiller logic vs call out to a shared utility.
-- How to measure “next use” in a dom-tree traversal:
-  - instruction-distance is linear; dom-order is not.
-- Whether to rely on LiveIntervals for validation/consistency or go SSA-native.
+SSA provides two key properties:
+1. **Single definition** per value
+2. **Dominance-shaped liveness**: all uses are dominated by the def
 
+This implies the interference graph is **chordal** (or close enough), enabling efficient greedy coloring with PEO rather than general graph coloring.
+
+## High-Level Workflow
+
+### Skeleton
+
+1. **Build analyses**:
+   - Dominator tree (`MachineDomTree`)
+   - Per-instruction next-use info ([Next_Use_Analysis](SSA_Spiller/02-Components/Next_Use_Analysis.md))
+   - Register class constraints (`SIRegisterInfo`)
+
+2. **Traverse dominator tree**:
+   - Maintain active set of currently-live SSA values (lane-aware)
+   - Allocate physical register for each new def when it becomes live
+   - Retire/free values when proven dead along traversal
+
+3. **When no register available**:
+   - Choose eviction/spill candidate using next-use (Belady-like) heuristics
+   - Materialize spill/reload using SSA-aware machinery
+
+4. **Continue** until all defs are assigned.
+
+## Spilling Model
+
+Reuses the [SSA_Spiller](SSA_Spiller/02-Components/SSA_Spiller.md) model:
+- Store at definition (correctness under EXEC)
+- Virtual spill point (where RP relief is intended)
+- Reload placement + SSA repair via [MachineLaneSSAUpdater](SSA_Spiller/04-Design/MachineLaneSSAUpdater.md)
+
+**Key difference**: Spilling is no longer a separate pre-pass; it becomes an on-demand action triggered by register unavailability during allocation.
+
+## AMDGPU-Specific Concerns
+
+| Concern | Handling |
+|---------|----------|
+| VGPR vs SGPR | Separate allocation passes |
+| Lane masks / subregisters | Allocate at (VReg, LaneMask) granularity |
+| Register tuples | N contiguous registers or fixed tuple shapes |
+| Implicit uses/defs | EXEC, VCC, SCC, M0 affect pressure |
+
+## Data Structures
+
+- **Active set**: lane-aware set of currently-live assigned values
+- **Assignment map**: vreg (or vreg+mask) → physreg/tuple
+- **Free lists**: per reg class, track available registers
+- **Next-use interface**: query "distance" for candidate selection
+
+## Theory
+
+- [Chordal Graphs](SSA_Spiller/03-Concepts/Chordal_Graphs.md)
+- `Perfect Elimination Order (PEO)`
+
+## Papers
+
+- *Register Allocation for Programs in SSA Form* (`06-Research/Papers/register-allocation-for-programs-in-ssa-form.pdf`)
+- `06-Research/Papers/ssara.pdf`
+
+## Open Questions
+
+- Exact PEO / traversal order in practice
+- Active-set retirement rule at dom-tree boundaries
+- Next-use query semantics across dom-tree traversal
+- LiveIntervals vs SSA-native liveness representation
