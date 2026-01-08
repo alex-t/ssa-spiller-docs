@@ -6,6 +6,26 @@
 
 - **Implementation**: [`AMDGPUSSARegisterSpiller.cpp`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp)
 
+---
+
+## Input MIR
+
+**SSA-form Machine IR**
+- Single definition per virtual register
+- Valid LiveIntervals
+- May exceed physical register limits
+
+## Output MIR
+
+**SSA-form Machine IR**
+- Register pressure within physical limits
+- Spill stores after definitions
+- Reload instructions before uses
+- SSA form preserved (new PHIs where needed)
+- LiveIntervals updated
+
+---
+
 ## Strategy
 
 **Store-at-definition** spill placement:

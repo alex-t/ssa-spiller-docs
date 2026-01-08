@@ -6,6 +6,25 @@
 
 📋 **Not implemented** — research topic with high complexity.
 
+---
+
+## Input MIR
+
+**SSA-form Machine IR with physical registers**
+- All registers assigned to physical registers
+- PHI nodes present at merge points
+- SSA invariants hold
+
+## Output MIR
+
+**Non-SSA Machine IR**
+- No PHI nodes
+- Explicit copy instructions where needed
+- Ready for final code emission
+- Traditional register assignment complete
+
+---
+
 ## Goal
 
 Eliminate PHI nodes with:

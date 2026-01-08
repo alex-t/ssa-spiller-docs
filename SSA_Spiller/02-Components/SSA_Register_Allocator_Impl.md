@@ -6,6 +6,25 @@
 
 📋 **Draft** — documentation-only, not yet implemented.
 
+---
+
+## Input MIR
+
+**SSA-form Machine IR**
+- Register pressure within limits (post-spilling)
+- Virtual registers only
+- Valid LiveIntervals
+
+## Output MIR
+
+**SSA-form Machine IR with physical registers**
+- All virtual registers assigned to physical registers
+- SSA form still preserved
+- PHI nodes use physical registers
+- Ready for SSA destruction
+
+---
+
 ## Strategy
 
 - **Graph-free allocation**: avoid explicit interference graph construction
