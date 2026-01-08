@@ -171,21 +171,22 @@ else {
 ```mermaid
 flowchart TD
     subgraph Outside["Outside Loop (MBB)"]
-        Query["Query Point<br/>(spill decision here)"]
+        Query["Query Point — spill decision here"]
     end
+    
+    Query -->|"distance to preheader"| PHTop
     
     subgraph PreHeader["Loop Pre-Header (Succ)"]
         PHTop["PreHeader Top"]
-        PHLast["PreHeader Bottom<br/>(EntryOff[Succ] instrs)"]
+        PHLast["PreHeader Bottom — EntryOff[Succ] instrs"]
         PHTop --> PHLast
     end
     
-    subgraph Loop["Loop Body"]
-        Use["Actual use of %x<br/>(executes many times)"]
-    end
+    PHLast -->|"ignored for outside query"| Use
     
-    Query -->|"distance to<br/>preheader"| PHTop
-    PHLast -->|"ignored for<br/>outside query"| Use
+    subgraph Loop["Loop Body"]
+        Use["Actual use of %x — executes many times"]
+    end
     
     style Query fill:#e1f5fe
     style PHLast fill:#c8e6c9,stroke:#4CAF50,stroke-width:3px
@@ -202,21 +203,19 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph MBB["Preheader (MBB, outside loop)"]
-        direction TB
-        PHTop["Entry (InstrOffset=3)"]
+        PHTop["Entry — InstrOffset=3"]
         PHMid["... 3 instructions ..."]
-        PHBot["Bottom (InstrOffset=0)<br/>Distance to in-loop use = 0 here"]
+        PHBot["Bottom — InstrOffset=0<br/>Distance to in-loop use = 0 here"]
+        PHTop --> PHMid --> PHBot
     end
+    
+    PHBot -->|"loop entry edge"| LHTop
     
     subgraph Succ["Loop Header (Succ, inside loop)"]
-        direction TB
         LHTop["Entry"]
         Use["use %x somewhere in loop"]
+        LHTop --> Use
     end
-    
-    PHTop --> PHMid --> PHBot
-    PHBot -->|"loop entry edge"| LHTop
-    LHTop --> Use
 ```
 
 - Original: use inside loop has some distance in Succ's frame
@@ -285,38 +284,33 @@ static inline int64_t rebaseFromSucc(int64_t SuccStored,
 #### Worked Example
 
 ```mermaid
-flowchart TB
+flowchart TD
     subgraph MBB["MBB (5 instructions)"]
-        direction TB
         M0["Offset=5 (top)"]
-        M1["MI: Offset=3<br/>Query point"]
+        M1["MI: Offset=3 — Query point"]
         M2["Offset=0 (bottom)"]
         M0 --> M1 --> M2
     end
     
+    M2 -->|"EntryOff[Succ]=3"| S0
+    
     subgraph Succ["Succ (3 instructions)"]
-        direction TB
         S0["Offset=3 (top)"]
-        S1["use %x<br/>Stored = -1"]
+        S1["use %x — Stored = -1"]
         S2["Offset=0 (bottom)"]
         S0 --> S1 --> S2
     end
-    
-    M2 -->|"EntryOff[Succ]=3"| S0
-    
-    subgraph Calc["Distance Calculation"]
-        C1["At MI (Offset=3):"]
-        C2["Rebased = -1 + 3 + 0 = 2<br/>(succ distance + succ entry)"]
-        C3["Materialized = 2 + 3 = 5<br/>(rebased + snapshot offset)"]
-        C1 --> C2 --> C3
-    end
 ```
 
-**Step-by-step**:
-1. Use `%x` in Succ has `Stored = -1` (1 instruction before block bottom)
-2. Rebase into MBB frame: `-1 + EntryOff[Succ](3) = 2`
-3. At query MI with `InstrOffset = 3`: `Materialized = 2 + 3 = 5`
-4. Result: Next use of `%x` is **5 instructions** from query point
+**Distance Calculation** (at query point MI, Offset=3):
+
+| Step | Formula | Result |
+|------|---------|--------|
+| 1. Stored distance in Succ | use is 1 instr before bottom | `-1` |
+| 2. Rebase into MBB frame | `-1 + EntryOff[Succ]` | `-1 + 3 = 2` |
+| 3. Materialize at MI | `rebased + InstrOffset[MI]` | `2 + 3 = 5` |
+
+**Result**: Next use of `%x` is **5 instructions** from query point
 
 ---
 
