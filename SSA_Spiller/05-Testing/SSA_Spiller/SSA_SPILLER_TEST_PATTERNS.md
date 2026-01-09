@@ -20,13 +20,13 @@ Source: [`spillAtDefinition`](https://github.com/alex-t/llvm-project/blob/45385c
 
 **Compiler Option:** `--amdgpu-ssa-spill-markers=1`
 
-**Instruction:** [`SI_VIRTUAL_SPILL_MARKER`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/SIInstructions.td) `<vreg_index>, <lane_mask>`
+**Instruction:** [`SI_VIRTUAL_SPILL_MARKER`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/SIInstructions.td) `%<vreg>, <lane_mask>`
 
 **Purpose:** A test-only pseudo-instruction that marks the **virtual spill point** - the location where register pressure is relieved (register logically becomes dead). This may differ from the **physical store location** ([store-at-definition](../../04-Design/Decisions.md#store-at-definition)).
 
 **Arguments:**
-- `vreg_index`: Virtual register index being spilled
-- `lane_mask`: Lane mask of spilled subregister (e.g., 255 = 0xFF = all lanes of vreg_64, 240 = 0xF0 = sub2_sub3)
+- `%<vreg>`: Virtual register being spilled (e.g., `%0`, `%1`)
+- `<lane_mask>`: Lane mask in 16-digit hex format (e.g., `00000000000000FF` = all lanes of vreg_64, `00000000000000F0` = sub2_sub3)
 
 **Omission Rule:** The marker is **omitted** when the virtual spill point immediately follows the physical store of the same [VMP](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/VRegMaskPair.h) (i.e., store-at-definition and virtual spill point are at the same position).
 
@@ -38,10 +38,10 @@ Source: [`AMDGPUSSARegisterSpiller.cpp` L709-720](https://github.com/alex-t/llvm
 |-----------|----------------|--------|
 | `spill-linear-dominated.mir` | ❌ Omitted | Virtual spill point matches store |
 | `spill-dominated-branches.mir` | ❌ Omitted | Virtual spill point matches store |
-| `spill-vreg-subregister.mir` | ✅ `SI_VIRTUAL_SPILL_MARKER 1, 240` | Spill point in bb.1, store in bb.0 |
-| `spill-multi-predecessor-join.mir` | ✅ `SI_VIRTUAL_SPILL_MARKER 0, 255` | Spill point in bb.1, store in bb.0 |
-| `spill-use-before-spill.mir` | ✅ `SI_VIRTUAL_SPILL_MARKER 0, 255` | Spill point in bb.1, store in bb.0 |
-| `spill-multi-path-independent.mir` | ✅ `SI_VIRTUAL_SPILL_MARKER 0, 255` | Spill points in bb.1/bb.3, store in bb.0 |
+| `spill-vreg-subregister.mir` | ✅ `SI_VIRTUAL_SPILL_MARKER %1, 00000000000000F0` | Spill point in bb.1, store in bb.0 |
+| `spill-multi-predecessor-join.mir` | ✅ `SI_VIRTUAL_SPILL_MARKER %0, 00000000000000FF` | Spill point in bb.1, store in bb.0 |
+| `spill-use-before-spill.mir` | ✅ `SI_VIRTUAL_SPILL_MARKER %0, 00000000000000FF` | Spill point in bb.1, store in bb.0 |
+| `spill-multi-path-independent.mir` | ✅ `SI_VIRTUAL_SPILL_MARKER %0, 00000000000000FF` | Spill points in bb.1/bb.3, store in bb.0 |
 
 ### Current Use Handling
 
@@ -162,7 +162,7 @@ graph TD
 ```mermaid
 graph TD
     BB0["bb.0.bb0<br/>%2:vreg_128 = GLOBAL_LOAD<br/>══════════════<br/>STORE %2.sub2_sub3 (at def)<br/>══════════════<br/>S_CMP, S_CBRANCH"]
-    BB1["bb.1<br/>S_MOV -1<br/>SI_VIRTUAL_SPILL_MARKER 1, 240<br/>IMPLICIT_DEF"]
+    BB1["bb.1<br/>S_MOV -1<br/>SI_VIRTUAL_SPILL_MARKER %1, 00000000000000F0<br/>IMPLICIT_DEF"]
     BB6["bb.6.bb4<br/>S_MOV 0<br/>REG_SEQUENCE"]
     BB2["bb.2.Flow<br/>PHI (pre-existing in input)<br/>S_CBRANCH"]
     BB4["bb.4.bb2<br/>RELOAD %2.sub2_sub3<br/>REG_SEQUENCE"]
@@ -189,12 +189,12 @@ graph TD
 |--------|-------|
 | **Spilled Register** | `%2.sub2_sub3:vreg_64` (subregister of vreg_128) |
 | **Store Location** | bb.0: Right after `GLOBAL_LOAD` (store-at-definition) |
-| **Virtual Spill Point** | bb.1: `SI_VIRTUAL_SPILL_MARKER 1, 240` |
+| **Virtual Spill Point** | bb.1: `SI_VIRTUAL_SPILL_MARKER %1, 00000000000000F0` |
 | **Reload Location** | bb.4.bb2: `SI_SPILL_V64_RESTORE` before REG_SEQUENCE |
 | **Use Type** | Dominated by bb.4 |
 | **PHI Nodes** | Pre-existing in INPUT MIR |
-| **Subregister** | Only `sub2_sub3` lanes (mask 0xF0 = 240) spilled/reloaded |
-| **Spill Marker** | `SI_VIRTUAL_SPILL_MARKER 1, 240` |
+| **Subregister** | Only `sub2_sub3` lanes (mask 0xF0) spilled/reloaded |
+| **Spill Marker** | `SI_VIRTUAL_SPILL_MARKER %1, 00000000000000F0` |
 
 ### Key Points
 - **Subregister precision**: Only `sub2_sub3` (2 lanes of 4) are spilled
@@ -238,7 +238,7 @@ graph TD
 | **Reload Location** | bb.3.join: Before use |
 | **Use Type** | Reachable (path_b is clean) |
 | **PHI Nodes** | None |
-| **Spill Marker** | `SI_VIRTUAL_SPILL_MARKER 0, 255` (vreg 0, mask 0xFF) |
+| **Spill Marker** | `SI_VIRTUAL_SPILL_MARKER %0, 00000000000000FF` |
 
 ---
 
@@ -273,7 +273,7 @@ graph TD
 | **Store Location** | bb.0: At definition (before branch) |
 | **Virtual Spill Point** | bb.1: After `%1`, `%2` defs |
 | **Reload Location** | bb.3.join |
-| **Spill Marker** | `SI_VIRTUAL_SPILL_MARKER 0, 255` (vreg 0, mask 0xFF) |
+| **Spill Marker** | `SI_VIRTUAL_SPILL_MARKER %0, 00000000000000FF` |
 
 ---
 
@@ -313,7 +313,7 @@ graph TD
 | **Path A Spill Point** | bb.1: After `%1`, `%2` defs |
 | **Path B Spill Point** | bb.3: After `%4`, `%5` defs |
 | **Reloads** | bb.2 (path_a_use) and bb.4 (join) |
-| **Spill Markers** | `SI_VIRTUAL_SPILL_MARKER 0, 255` in bb.1 and bb.3 |
+| **Spill Markers** | `SI_VIRTUAL_SPILL_MARKER %0, 00000000000000FF` in bb.1 and bb.3 |
 
 ### Note
 Both paths independently exceed RP limit.
