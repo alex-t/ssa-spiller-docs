@@ -159,7 +159,9 @@ The spiller separates:
 
 ### Marker pseudo-instruction (for tests)
 - Option: `--amdgpu-ssa-spill-markers=1`
-- Pseudo MI: [`SI_VIRTUAL_SPILL_MARKER`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/SIInstructions.td) `<vreg_index>, <lane_mask>`
+- Pseudo MI: [`SI_VIRTUAL_SPILL_MARKER`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/SIInstructions.td) `%<vreg>, <lane_mask>`
+  - `%<vreg>`: Virtual register being spilled (e.g., `%0`, `%1`)
+  - `<lane_mask>`: 16-digit hex format via `PrintLaneMask` (e.g., `00000000000000FF`)
 
 Insertion rule (simplified): if the marker would be placed **immediately adjacent** to the actual store for the same `(VReg,LaneMask)`, insertion is omitted.
 #### PHI nodes and debug spill markers
