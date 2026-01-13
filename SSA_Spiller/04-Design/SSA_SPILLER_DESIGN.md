@@ -1,6 +1,6 @@
 # SSA Register Spiller (AMDGPU) — Design (Current)
 
-This document describes the **current** register spilling pass for AMDGPU that operates on SSA-form Machine IR. The pass assumes the input is in SSA form and relies on SSA properties (single definition, dominance) for correctness.
+This document describes the **current** SSA-aware register spilling pass for AMDGPU, as implemented in LLVM Machine IR.
 
 ## Source Mapping
 - **Component**: SSA Register Spiller
@@ -20,10 +20,10 @@ This document describes the **current** register spilling pass for AMDGPU that o
 The SSA spiller is a MachineFunction pass that:
 - Tracks register pressure (RP) while scanning instructions.
 - When RP exceeds a limit, selects one or more **spill candidates** using a [Belady-style next-use heuristic](../03-Concepts/MIN_Algorithm.md).
-- Stores spilled values [**at definition**](Decisions.md#store-at-definition) to avoid [[../03-Concepts/EXEC_Drift|EXEC drift]] issues.
+- Stores spilled values [**at definition**](Decisions.md#store-at-definition) to avoid EXEC drift issues.
 - Computes a [**virtual spill point**](#virtual-spill-point-and-si_virtual_spill_marker) (where the value is considered "logically dead" for RP relief).
-- Kills spilled live interval in the CFG subgraph dominated by the kill point ([[Decisions#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region|Design Decision]]).
 - Inserts reloads and repairs SSA form using [`MachineLaneSSAUpdater`](../02-Components/MachineLaneSSAUpdater.md).
+- Relies on [PHI-aware use rewriting](Decisions.md#phi-aware-use-rewriting-supersedes-interval-killing) to correctly handle PHI operands during SSA repair (see [Design Decision](Decisions.md#phi-aware-use-rewriting-supersedes-interval-killing) for details).
 - Shrinks live intervals after repairs to reflect the new SSA use graph.
 
 
@@ -122,9 +122,9 @@ flowchart TD
   liveSet --> pick["getVMPsToSpill (Belady + lane splitting)"]
   pick --> perVmp["spillAndReload (one VMP at a time)"]
   perVmp --> storeDef["spillAtDefinition (store after def)"]
-  storeDef --> killIdx["compute KillIdx (virtual spill point)<br/>kill interval in the CFG subgraph dominated by the kill point"]
+  storeDef --> killIdx["compute KillIdx (virtual spill point)"]
   killIdx --> marker["optional SI_VIRTUAL_SPILL_MARKER"]
-  marker --> reloads["emitReloadsAndRepairSSA"]
+  marker --> reloads["emitReloadsAndRepairSSA<br/>(PHI-aware use rewriting)"]
   reloads --> shrink["shrinkToUses (after SSA repair)"]
   shrink --> procFn
 ```
@@ -139,9 +139,6 @@ flowchart TD
 - `AMDGPUSSARegisterSpiller::spillAtDefinition`  
   - **File (symbolic)**: `llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp`  
   - **GitHub**: [`L966-L1047`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L966-L1047)
-- `AMDGPUSSARegisterSpiller::killIntervalInDominatedRegion`  
-  - **File (symbolic)**: `llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp`  
-  - **GitHub**: [`L1557-L1581`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L1557-L1581)
 
 ## Spill selection (Belady + lane splitting)
 When a candidate register is larger than the remaining "spill budget", the spiller asks NextUseAnalysis for a subreg/lane ordering:
@@ -159,9 +156,7 @@ The spiller separates:
 
 ### Marker pseudo-instruction (for tests)
 - Option: `--amdgpu-ssa-spill-markers=1`
-- Pseudo MI: [`SI_VIRTUAL_SPILL_MARKER`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/SIInstructions.td) `%<vreg>, <lane_mask>`
-  - `%<vreg>`: Virtual register being spilled (e.g., `%0`, `%1`)
-  - `<lane_mask>`: 16-digit hex format via `PrintLaneMask` (e.g., `00000000000000FF`)
+- Pseudo MI: [`SI_VIRTUAL_SPILL_MARKER`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/SIInstructions.td) `<vreg_index>, <lane_mask>`
 
 Insertion rule (simplified): if the marker would be placed **immediately adjacent** to the actual store for the same `(VReg,LaneMask)`, insertion is omitted.
 #### PHI nodes and debug spill markers
