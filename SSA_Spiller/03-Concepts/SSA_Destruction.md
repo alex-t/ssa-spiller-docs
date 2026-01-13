@@ -6,7 +6,7 @@ Hack, Grund, Goos
 Section 4.2
 
 PDF:
-[[06-Research/Papers/ssara.pdf|Register Allocation for Programs in SSA-Form ]]
+[[ssara.pdf|Register Allocation for Programs in SSA-Form ]]
 
 ---
 
