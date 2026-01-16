@@ -1,20 +1,20 @@
 # Wikilink Conversion Report
 
-**Generated:** 2026-01-09 09:34:59
+**Generated:** 2026-01-08 15:23:20
 
 ## Summary
 
-- Files processed: 87
+- Files processed: 86
 - Files modified: 30
-- Total links converted: 132
+- Total links converted: 131
 
 | Status | Count |
 |--------|-------|
-| ✅ OK (links) | 79 |
+| ✅ OK (links) | 77 |
 | ✅ Embedded (base64) | 0 |
 | ⚠️ Ambiguous | 25 |
 | ⚠️ Image too large | 1 |
-| ❌ Not Found (links) | 26 |
+| ❌ Not Found (links) | 27 |
 | ❌ Missing image | 1 |
 
 ## ⚠️ Images Too Large (>300KB)
@@ -76,6 +76,7 @@ These links could not be resolved (converted to inline code):
 
 ### `05-Testing/Next Use Analysis Tests`
 - `SSA_Spiller/04-Design/Persistent_Map_for_NUA.md:268`
+- `SSA_Spiller/02-Components/Next_Use_Analysis.md:16`
 
 ### `06-Research/Archive/`
 - `SSA_Spiller/README.md:68`
