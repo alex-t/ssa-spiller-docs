@@ -1,20 +1,20 @@
 # Wikilink Conversion Report
 
-**Generated:** 2026-01-08 15:23:20
+**Generated:** 2026-01-30 19:15:54
 
 ## Summary
 
-- Files processed: 86
+- Files processed: 88
 - Files modified: 30
 - Total links converted: 131
 
 | Status | Count |
 |--------|-------|
-| ✅ OK (links) | 77 |
+| ✅ OK (links) | 76 |
 | ✅ Embedded (base64) | 0 |
-| ⚠️ Ambiguous | 25 |
+| ⚠️ Ambiguous | 27 |
 | ⚠️ Image too large | 1 |
-| ❌ Not Found (links) | 27 |
+| ❌ Not Found (links) | 26 |
 | ❌ Missing image | 1 |
 
 ## ⚠️ Images Too Large (>300KB)
@@ -45,7 +45,9 @@ These links matched multiple files (first match used):
 - `SSA_Spiller/04-Design/Architecture.md:60` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md)`
 - `SSA_Spiller/04-Design/Architecture.md:83` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md)`
 - `SSA_Spiller/04-Design/NextUseAnalysis.md:528` - `SSA_SPILLER_DESIGN` → `[SSA Spiller Design](SSA_SPILLER_DESIGN.md)`
-- `SSA_Spiller/04-Design/Decisions.md:170` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/04-Design/Decisions.md:187` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md)`
+- `SSA_Spiller/04-Design/Reload_optimizer.md:298` - `SSA_SPILLER_DESIGN` → `[SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md)`
+- `SSA_Spiller/04-Design/Reload_optimizer.md:300` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md)`
 - `SSA_Spiller/02-Components/SSA_Destruction.md:52` - `../03-Concepts/SSA_Destruction` → `[SSA Destruction (Concept)](SSA_Destruction.md)`
 - `SSA_Spiller/02-Components/SSA_Destruction.md:58` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
 - `SSA_Spiller/02-Components/SSA_Register_Allocator_Impl.md:67` - `MachineLaneSSAUpdater` → `[MachineLaneSSAUpdater](../04-Design/MachineLaneSSAUpdater.md)`
@@ -76,7 +78,6 @@ These links could not be resolved (converted to inline code):
 
 ### `05-Testing/Next Use Analysis Tests`
 - `SSA_Spiller/04-Design/Persistent_Map_for_NUA.md:268`
-- `SSA_Spiller/02-Components/Next_Use_Analysis.md:16`
 
 ### `06-Research/Archive/`
 - `SSA_Spiller/README.md:68`

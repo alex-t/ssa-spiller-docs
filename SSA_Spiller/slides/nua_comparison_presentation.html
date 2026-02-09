@@ -1,0 +1,1514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Next Use Analysis — Implementation Comparison</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/dist/reveal.css"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/dist/theme/white.css"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/plugin/highlight/monokai.css"/>
+<style>
+  :root {
+    --ml-color: #1565C0;
+    --gfx-color: #C62828;
+    --neutral-color: #37474F;
+    --good: #2E7D32;
+    --bad: #C62828;
+    --warn: #E65100;
+    --note: #546E7A;
+  }
+  .reveal { font-size: 28px; }
+  .reveal h1 { font-size: 1.8em; color: var(--neutral-color); }
+  .reveal h2 { font-size: 1.4em; color: var(--neutral-color); }
+  .reveal h3 { font-size: 1.1em; }
+  .reveal .slides section { text-align: left; }
+  .ml { color: var(--ml-color); font-weight: bold; }
+  .gfx { color: var(--gfx-color); font-weight: bold; }
+  .good { color: var(--good); }
+  .bad { color: var(--bad); }
+  .warn { color: var(--warn); }
+  .reveal pre { font-size: 0.55em; width: 100%; }
+  .reveal pre code { max-height: 500px; }
+  .reveal pre code .hljs-comment { color: #a0a0a0; }
+  .two-col { display: flex; gap: 24px; }
+  .two-col > div { flex: 1; }
+  .comparison-table { width: 100%; border-collapse: collapse; font-size: 0.75em; margin-top: 12px; }
+  .comparison-table th, .comparison-table td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+  .comparison-table th { background: #ECEFF1; }
+  .comparison-table .ml-col { background: #E3F2FD; }
+  .comparison-table .gfx-col { background: #FFF3E0; }
+  .comparison-table .verdict { background: #E8F5E9; font-weight: bold; }
+  .comparison-table .crash-col { background: #FFEBEE; color: #C62828; font-weight: bold; }
+  .comparison-table .invalid-col { background: #F5F5F5; color: #888; font-style: italic; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7em; font-weight: bold; color: white; }
+  .tag-ml { background: var(--ml-color); }
+  .tag-gfx { background: var(--gfx-color); }
+  .tag-good { background: var(--good); }
+  .tag-note { background: var(--note); }
+  .tag-warn { background: var(--warn); }
+  .big-number { font-size: 2.5em; font-weight: bold; text-align: center; margin: 20px 0; }
+  .slide-note { font-size: 0.6em; color: #888; margin-top: 16px; border-top: 1px solid #eee; padding-top: 8px; }
+  .reveal section img { max-width: 90%; max-height: 450px; }
+  .reveal ul { font-size: 0.85em; }
+  .reveal li { margin-bottom: 6px; }
+  .api-box { background: #F5F5F5; border-left: 4px solid var(--ml-color); padding: 8px 12px; margin: 8px 0; font-size: 0.75em; }
+  .api-box.gfx-api { border-left-color: var(--gfx-color); }
+  .verdict-box { background: #E8F5E9; border: 2px solid var(--good); border-radius: 8px; padding: 16px; margin: 16px 0; text-align: center; }
+  .note-box { background: #ECEFF1; border: 2px solid var(--note); border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .highlight-block { border: 2px solid var(--ml-color); border-radius: 8px; padding: 12px; margin: 8px 0; background: #E3F2FD; }
+  .mermaid-output { text-align: center; margin: 12px 0; overflow: visible; font-size: 16px; }
+  .mermaid-output svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- TITLE -->
+<section data-background-color="#1565C0">
+  <h1 style="color:white; text-align:center; font-size: 2em;">Next Use Analysis</h1>
+  <h2 style="color:#BBDEFB; text-align:center;">Implementation Comparison &mdash; Final Technical Decision</h2>
+  <p style="color:#E3F2FD; text-align:center; margin-top: 40px;">SSA Spiller Team &mdash; February 2026</p>
+  <p style="color:#90CAF9; text-align:center; font-size:0.7em;">Based on Braun &amp; Hack, "Register Spilling and Live-Range Splitting for SSA-Form Programs" (CC'09)</p>
+</section>
+
+<!-- AGENDA -->
+<section>
+  <h2>Agenda</h2>
+  <ol>
+    <li><strong>Part 1:</strong> <span class="ml">ML NUA Design</span> &mdash; Architecture, algorithms, data structures</li>
+    <li><strong>Part 2:</strong> <span class="gfx">Graphics NUA Design</span> &mdash; Architecture and source code analysis</li>
+    <li><strong>Part 3:</strong> <strong>Architectural Trade-offs and Integration Assessment</strong> &mdash; Spiller API coverage and design comparison</li>
+    <li><strong>Part 4:</strong> <strong>Analysis &amp; Final Decision</strong> &mdash; Independent analysis, updated benchmarks, technical decision</li>
+  </ol>
+  <p style="margin-top: 30px; font-size: 0.8em;"><strong>Key Question:</strong> How do the two NUA designs compare, and which implementation is technically stronger?</p>
+</section>
+
+<!-- PART 1 HEADER -->
+<section data-background-color="#E3F2FD">
+  <h1 style="text-align:center;">Part 1</h1>
+  <h2 style="text-align:center;" class="ml">ML NUA Design</h2>
+  <p style="text-align:center;">Dataflow-based, lane-aware, loop-sensitive next-use analysis</p>
+</section>
+
+<!-- Theory -->
+<section>
+  <h2>Theoretical Foundation: Braun &amp; Hack CC'09</h2>
+  <div class="two-col">
+    <div>
+      <h3>Key Ideas from the Paper</h3>
+      <ul>
+        <li><strong>MIN algorithm</strong> generalized from straight-line to CFGs</li>
+        <li><strong>CFG-global next-use distances</strong> via dataflow analysis</li>
+        <li><strong>Loop-aware edge lengths</strong>: loop exits get weight M<sup>3</sup></li>
+        <li><strong>W<sup>entry</sup></strong>: registers assumed in registers at block entry</li>
+        <li>Fixed-point iteration in <strong>reverse post-order</strong> (paper: forward analysis)</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Our Faithful Implementation</h3>
+      <ul>
+        <li class="good">Dataflow fixed-point iteration</li>
+        <li class="good">Post-order traversal (backward analysis: successors before block)</li>
+        <li class="good">Loop-exit edge weighting (LoopTag)</li>
+        <li class="good">Transfer function: bottom-up instruction walk</li>
+        <li class="good">Extended with <strong>lane-mask</strong> granularity</li>
+        <li class="good">Extended with <strong>three-tier ranking</strong></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- Pipeline -->
+<section>
+  <h2>Pipeline Context</h2>
+<div class="mermaid-output" id="m1"></div>
+</section>
+
+<!-- Data Structures -->
+<section>
+  <h2>Core Data Structures</h2>
+  <h3 class="ml">VRegDistances &mdash; The Heart of NUA</h3>
+  <div class="two-col">
+    <div>
+      <pre><code class="language-cpp">class VRegDistances {
+  using Record = std::pair&lt;LaneBitmask, int64_t&gt;;
+  using SortedRecords = std::set&lt;Record, CompareByDist&gt;;
+  DenseMap&lt;unsigned, SortedRecords&gt; NextUseMap;
+};</code></pre>
+      <ul>
+        <li><strong>Per-VReg grouping</strong>: efficient lookup by register number</li>
+        <li><strong>Sorted by distance</strong>: closest use first</li>
+        <li><strong>Lane-mask granularity</strong>: tracks which <em>lanes</em> are used</li>
+        <li><strong>Coverage logic</strong>: prevents redundant records</li>
+      </ul>
+    </div>
+    <div>
+<div class="mermaid-output" id="m2"></div>
+    </div>
+  </div>
+  <p class="slide-note">Source: <code>AMDGPUNextUseAnalysis.h:43-225</code></p>
+</section>
+
+<!-- Successor Merge -->
+<section>
+  <h2>Successor Distance Merge</h2>
+  <h3>NUA is a backward dataflow problem: information flows from successors</h3>
+  <div class="two-col">
+    <div>
+<div class="mermaid-output" id="m3"></div>
+    </div>
+    <div>
+      <pre><code class="language-cpp">// For each successor:
+Curr.merge(SuccDist,
+           EntryOff[Succ],  // rebase offset
+           EdgeWeight);      // LoopTag if exit
+
+// merge() calls insert() for each record.
+// insert() keeps the closer use per lane
+// = MIN semantics across all successors.</code></pre>
+      <ul>
+        <li>Succ 1 has use of <code>x</code> at distance 2</li>
+        <li>Succ 2 has use of <code>x</code> at distance 5</li>
+        <li>After merge: MBB sees use of <code>x</code> at distance <strong>2</strong> (MIN)</li>
+        <li>Distances rebased by <code>EntryOff[Succ]</code> before merging</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- Lane Mask Coverage Logic -->
+<section>
+  <h2>Lane-Mask Coverage Logic</h2>
+  <h3>insert(VMP, Dist) &mdash; Smart Record Management</h3>
+  <pre><code class="language-cpp">// If existing use covers the new use (existing lanes are superset of new lanes)
+if ((R.first & D.first) == R.first) {
+  if (isCloserOrEqual(D.second, R.second))
+    return false;  // Existing is closer - reject new
+}
+// If new use covers existing use (new lanes are superset of existing lanes)
+if ((D.first & R.first) == D.first) {
+  if (isCloserOrEqual(R.second, D.second))
+    ToErase.push_back(It);  // New is closer - evict existing
+}</code></pre>
+  <div class="two-col">
+    <div>
+      <h3>Why This Matters for AMDGPU</h3>
+      <ul>
+        <li>AMDGPU registers can be <strong>up to 1024 bits</strong> (32x32-bit lanes)</li>
+        <li>Different lanes may be used at <strong>different distances</strong></li>
+        <li>Spilling should target only the <strong>furthest-use lanes</strong></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Example: %v[0:3]:sgpr_128</h3>
+      <table class="comparison-table" style="font-size: 0.75em;">
+        <tr><th>Lane</th><th>Next Use</th><th>Action</th></tr>
+        <tr><td>lane 0-1</td><td>2 instrs</td><td class="good">keep</td></tr>
+        <tr><td>lane 2</td><td>50 instrs</td><td class="warn">spill candidate</td></tr>
+        <tr><td>lane 3</td><td>dead</td><td class="bad"><strong>spill first!</strong></td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- Lane Mask Coverage: 3 Cases -->
+<section>
+  <h2>Lane-Mask Coverage: Three Key Cases</h2>
+  <h3>Query vs. use lane-mask relationships</h3>
+  <div style="display: flex; gap: 16px;">
+    <div style="flex: 1;">
+      <h3 style="text-align:center;">Case 1: Query full reg<br/>Subreg used first</h3>
+      <div class="mermaid-output" id="m4"></div>
+    </div>
+    <div style="flex: 1;">
+      <h3 style="text-align:center;">Case 2: Query subreg<br/>Full reg used first</h3>
+      <div class="mermaid-output" id="m5"></div>
+    </div>
+    <div style="flex: 1;">
+      <h3 style="text-align:center;">Case 3: Query subreg<br/>Different subreg used</h3>
+      <div class="mermaid-output" id="m6"></div>
+    </div>
+  </div>
+  <div class="highlight-block" style="margin-top: 12px;">
+    <strong>Key insight:</strong> Coverage logic uses <code>(A &amp; B) == A</code> to test if B's lanes are a <strong>superset</strong> of A's. This allows subreg uses and full-reg uses to interact correctly &mdash; unlike exact-match, which would miss Case 1 and Case 2 entirely.
+  </div>
+</section>
+
+<!-- Relative Distance Storage -->
+<section>
+  <h2>Relative Distance Storage Scheme</h2>
+  <h3>Core Innovation: Negative-Offset Encoding</h3>
+  <div class="mermaid-output" id="m7"></div>
+  <div class="two-col">
+    <div>
+      <h3>Materialization Formula</h3>
+      <pre><code class="language-cpp">int64_t materialize(int64_t Stored,
+                    unsigned SnapshotOffset) {
+  int64_t Mat64 = Stored + SnapshotOffset;
+  return (Mat64 <= 0) ? 0 : Mat64;
+}</code></pre>
+    </div>
+    <div>
+      <table class="comparison-table">
+        <tr><th>Step</th><th>Formula</th><th>Value</th></tr>
+        <tr><td>Stored in Succ</td><td>-1</td><td>-1</td></tr>
+        <tr><td>Rebase to MBB</td><td>-1 + EntryOff[Succ]=3</td><td>2</td></tr>
+        <tr><td>Materialize @ MI</td><td>2 + InstrOffset=3</td><td><strong>5</strong></td></tr>
+      </table>
+      <p><strong>Result:</strong> Next use is 5 instructions away</p>
+    </div>
+  </div>
+  <p class="slide-note">This scheme enables efficient block-to-block propagation: just add EntryOffset. Source: <code>AMDGPUNextUseAnalysis.cpp:18-50</code></p>
+</section>
+
+<!-- Three-Tier Ranking -->
+<section>
+  <h2>Three-Tier Distance Ranking</h2>
+  <pre><code class="language-cpp">static constexpr int64_t LoopTag = (int64_t)1 << 40;  // ~1e12  — marks "outside current loop"
+static constexpr int64_t DeadTag = (int64_t)1 << 60;  // ~1e18  — marks "no use found"
+static constexpr unsigned DeadDistance = 65535;         // sentinel for dead registers</code></pre>
+  <table class="comparison-table" style="width: 80%; margin: 16px auto;">
+    <tr><th>Tier</th><th>Range</th><th>Meaning</th><th>Spill Priority</th></tr>
+    <tr><td><strong>1: Finite</strong></td><td>0 &ndash; 59,999</td><td>Use within current loop or acyclic path</td><td>Lowest (keep in register)</td></tr>
+    <tr><td><strong>2: Loop-exit</strong></td><td>60,000 &ndash; 64,999</td><td>Use exists, but only after loop exit</td><td>Medium</td></tr>
+    <tr><td><strong>3: Dead</strong></td><td>65,535</td><td>No use found anywhere</td><td class="good"><strong>Highest (spill first!)</strong></td></tr>
+  </table>
+  <div class="highlight-block">
+    <strong>Why 3 tiers?</strong> Belady's algorithm says "evict the furthest use." But crossing a loop boundary changes the semantics &mdash; a use 10 instructions away inside a loop body is much more urgent than a use 5 instructions away after the loop exit (which won't execute every iteration).
+  </div>
+</section>
+
+<!-- Loop Handling -->
+<section>
+  <h2>Loop Handling: Edge Weights &amp; Transformations</h2>
+  <div class="two-col">
+    <div>
+      <h3>Loop-Exit Edge: Add LoopTag</h3>
+      <pre><code class="language-cpp">// analyze(), line 294-301
+if (LoopExits.contains(MBBNum)) {
+  unsigned ExitTo = LoopExits[MBBNum];
+  if (SuccNum == ExitTo)
+    EdgeWeight = LoopTag; // ~1e12
+}</code></pre>
+      <p>Uses after loop exit get massive penalty.</p>
+    </div>
+    <div>
+      <h3>Loop Entry: Two Transformations</h3>
+      <pre><code class="language-cpp">// analyze(), line 303-323
+for (Record &R : SuccDist) {
+  if (R.second >= LoopTag) {
+    // Outside-loop use: unwrap
+    R.second -= LoopTag;
+  } else {
+    // Inside-loop use: truncate
+    // to preheader distance
+    R.second = -(int64_t)EntryOff[Succ];
+  }
+}</code></pre>
+    </div>
+  </div>
+<div class="mermaid-output" id="m8"></div>
+</section>
+
+<!-- Algorithm Flow -->
+<section>
+  <h2>Algorithm: analyze() &mdash; Fixed-Point Iteration</h2>
+  <pre><code class="language-cpp">void analyze(const MachineFunction &MF) {
+  // Post-order: successors processed before the block (backward dataflow)
+  do {
+    Changed = false;
+    for (MBB : post_order) {
+      // 1. Merge distances from successors
+      for (Succ : MBB->successors()) {
+        EdgeWeight = isLoopExit(MBB, Succ) ? LoopTag : 0;
+        handleLoopEntry(SuccDist);       // transform in/out-loop uses
+        filterPHIOperands(SuccDist, MBB); // remove PHIs not from this edge
+        Curr.merge(SuccDist, EntryOff[Succ], EdgeWeight);
+      }
+
+      // 2. Bottom-up instruction walk
+      for (MI : reverse(MBB)) {
+        for (MO : MI.operands()) {
+          if (MO.isUse()) Curr.insert(VMP, -Offset);  // record use
+          if (MO.isDef()) Curr.clear(VMP);             // kill value
+        }
+        InstrDist[&MI] = Curr;   // snapshot at every instruction
+        InstrOffset[&MI] = Offset++;
+      }
+
+      // 3. Check convergence
+      if (UpwardNextUses[MBB] != Curr) { Changed = true; }
+    }
+  } while (Changed);
+}</code></pre>
+  <p><strong>Traversal:</strong> Post-order ensures successors are visited before the block &mdash; so successor distances are available for merging.<br/>
+  <strong>Convergence:</strong> 2-3 iterations for acyclic regions, O(loop_depth) for nested loops.</p>
+</section>
+
+<!-- Per-Instruction Snapshots -->
+<section>
+  <h2>Per-Instruction Snapshots</h2>
+  <h3>Every Instruction Gets a Distance Snapshot</h3>
+  <pre><code class="language-cpp">class NextUseInfo {
+  VRegDistances Bottom;   // distances at block exit
+  DenseMap&lt;const MachineInstr*, VRegDistances&gt; InstrDist;   // per-MI snapshot
+  DenseMap&lt;const MachineInstr*, unsigned&gt;      InstrOffset; // for materialization
+};</code></pre>
+  <div class="highlight-block">
+    <h3>Why Per-Instruction Snapshots Are Critical</h3>
+    <ul>
+      <li>The spiller walks instructions <strong>forward</strong>, calling <code>getNextUseDistance(MI, VMP)</code> at each high-pressure point</li>
+      <li>Without snapshots, each query would require <strong>re-walking the block</strong> from bottom up to the query point</li>
+      <li>With snapshots: <strong>O(1) lookup + O(lanes) materialization</strong></li>
+      <li>Memory trade-off: O(B &times; I &times; V) &mdash; justified by query frequency in the spiller</li>
+      <li style="font-size:0.85em; color:#666;">B = basic blocks, I = instrs/block, V = live VRegs</li>
+    </ul>
+  </div>
+</section>
+
+<!-- Public API -->
+<section>
+  <h2>Public API &mdash; What the Spiller Consumes</h2>
+  <div class="api-box"><strong>1. getNextUseDistance(Iterator, VRegMaskPair) -> unsigned</strong><br/>Distance from specific instruction to next use. Returns 0..65535 (three-tier ranking).</div>
+  <div class="api-box"><strong>2. getNextUseDistance(MBB, VRegMaskPair) -> unsigned</strong><br/>Distance from block end to next use. Used at block boundaries.</div>
+  <div class="api-box"><strong>3. getSortedSubregUses(Iterator/MBB, VRegMaskPair) -> SmallVector</strong><br/>Subregister uses sorted by distance (furthest first). Enables <strong>lane-level spill selection</strong>.</div>
+  <div class="api-box"><strong>4. usedInBlock(MBB) -> VRegMaskPairSet ref</strong><br/>Set of (VReg, LaneMask) used in block. <strong>O(1) block-level liveness check</strong> for path walking.</div>
+  <div class="api-box"><strong>5. isDead(MBB, Iterator, VRegMaskPair) -> bool</strong><br/>Quick check if register is dead (no uses anywhere reachable).</div>
+</section>
+
+<!-- Complexity -->
+<section>
+  <h2>Complexity Analysis</h2>
+  <table class="comparison-table" style="width: 90%; margin: 16px auto;">
+    <tr><th>Phase</th><th>Time Complexity</th><th>Space</th></tr>
+    <tr><td><code>init()</code></td><td>O(L x E) &mdash; loops x exit edges</td><td>O(L)</td></tr>
+    <tr><td><code>analyze()</code></td><td>O(D x B x I x V)</td><td>O(B x I x V x R)</td></tr>
+    <tr><td colspan="3" style="font-size:0.8em;">L=loops, E=exit edges, D=iterations (&le;3), B=basic blocks, I=instrs/block, V=live VRegs, R=subreg records/VReg</td></tr>
+    <tr><td><code>getNextUseDistance()</code></td><td>O(R) &mdash; records per VReg</td><td>O(1) lookup</td></tr>
+    <tr><td><code>getSortedSubregUses()</code></td><td>O(R)</td><td>O(R) output</td></tr>
+    <tr><td><code>usedInBlock()</code></td><td>O(1)</td><td>O(B x V) precomputed</td></tr>
+  </table>
+  <div class="highlight-block">
+    <strong>Key insight:</strong> Analysis runs <strong>once</strong> (O(D x B x I x V)), then all queries are O(1)-O(R).<br/>For typical AMDGPU shaders: D&lt;=3, B&lt;=100, I&lt;=50, R&lt;=3 &mdash; <strong>very fast in practice</strong>.
+  </div>
+</section>
+
+<!-- PART 2 HEADER -->
+<section data-background-color="#FFF3E0">
+  <h1 style="text-align:center;">Part 2</h1>
+  <h2 style="text-align:center;" class="gfx">Graphics NUA Design</h2>
+  <p style="text-align:center;">On-demand, path-based distance computation</p>
+</section>
+
+<!-- Graphics Architecture -->
+<section>
+  <h2 class="gfx">Graphics NUA: On-Demand Path Computation</h2>
+  <pre><code class="language-cpp">class AMDGPUNextUseAnalysisImpl {
+  const MachineFunction *MF;
+  const SIRegisterInfo *TRI;
+  const MachineLoopInfo *MLI;
+  const MachineDominatorTree *DT;       // requires dominator tree
+  DenseMap&lt;const MachineInstr*, double&gt; InstrToId;  // per-block instruction IDs
+  DenseMap&lt;Path, PathInfo, PathDenseMapInfo&gt; Paths;  // cached block-pair paths
+  CompatibilityMode CompatMode;  // Graphics vs MachineLearning
+};</code></pre>
+  <h3>Fundamental Difference: No Pre-Computation</h3>
+  <ul>
+    <li><strong>No dataflow iteration</strong> &mdash; no fixed-point convergence</li>
+    <li><strong>No per-instruction snapshots</strong> &mdash; no VRegDistances</li>
+    <li><strong>On-demand:</strong> each <code>getNextUseDistance()</code> call triggers computation</li>
+    <li><strong>Per-register:</strong> walks all uses of a register via <code>MRI->use_nodbg_operands()</code></li>
+    <li><strong>Dijkstra:</strong> shortest path between blocks computed on demand</li>
+  </ul>
+</section>
+
+<!-- Graphics Distance Computation -->
+<section>
+  <h2 class="gfx">Distance Computation: calcDistanceToUse()</h2>
+  <pre><code class="language-cpp">double calcDistanceToUse(Register LiveReg, const MachineInstr &CurMI,
+                         const MachineOperand *UseMO) const {
+  // Case 1: Use outside current loop
+  if (isUseOutsideOfTheCurrentLoop(UseLoop, CurLoop))
+    return calcInsideToOutsideLoopDistance(LiveReg, &CurMI, UseMI);
+
+  // Case 2: Backedge PHI
+  if (isIncomingValFromBackedge(&CurMI, UseMI, LiveReg))
+    return calcBackedgeDistance(&CurMI, UseMI);
+
+  // Case 3 (ML mode): Special cases for deeper loops, different blocks...
+  if (mlMode()) { /* ... many sub-cases ... */ }
+
+  // Case 4: Default — shortest path
+  return calcShortestDistance(&CurMI, UseMI);
+}</code></pre>
+  <div class="note-box"><strong>Architectural note:</strong> Distance computation uses a case-dispatch design with separate formulas for each loop-relationship category. Source code analysis identifies a 7-level call hierarchy that is difficult to audit exhaustively.</div>
+</section>
+
+<!-- Graphics Loop Handling -->
+<section>
+  <h2 class="gfx">Loop Handling: Exponential Weight Encoding</h2>
+  <pre><code class="language-cpp">double encodeLoopDepth(double Depth) {
+  constexpr double LoopWeight = 1000.0;
+  return std::pow(LoopWeight, Depth);  // 1000^depth
+}
+// depth 1 = 1,000
+// depth 2 = 1,000,000
+// depth 3 = 1,000,000,000  (approaching double precision limits)</code></pre>
+  <div class="two-col">
+    <div>
+      <h3>Design Trade-offs</h3>
+      <ul>
+        <li>Distance domain uses <code>double</code> with multiplicative <code>1000^depth</code> encoding. At high nesting depths, floating-point precision limits may affect distance ordering.</li>
+        <li>Distance comparisons use floating-point arithmetic, in contrast to the ML NUA's integer domain.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>ML NUA Approach</h3>
+      <ul>
+        <li><span class="tag tag-good">EXACT</span> <code>int64_t</code> with LoopTag = 2<sup>40</sup></li>
+        <li><span class="tag tag-good">SAFE</span> DeadTag = 2<sup>60</sup> &mdash; safe for any nesting</li>
+        <li><span class="tag tag-good">CLEAN</span> Integer comparison &mdash; no precision issues</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- Graphics Shortest Path -->
+<section>
+  <h2 class="gfx">Shortest Path: Dijkstra per Block Pair</h2>
+  <pre><code class="language-cpp">double calcShortestPath(const MachineBasicBlock *From,
+                        const MachineBasicBlock *To, bool Unweighted) {
+  // Full Dijkstra with priority queue
+  std::priority_queue&lt;...&gt; Worklist;
+  DenseSet&lt;const MachineBasicBlock*&gt; Visited;
+  DenseMap&lt;const MachineBasicBlock*, Data&gt; MBBData;
+
+  while (!Worklist.empty()) {
+    // ... standard Dijkstra ...
+    for (MachineBasicBlock *Succ : CurMBB->successors()) {
+      if (PI.Backedge && gfxMode()) continue; // skip backedges in gfx mode
+    }
+  }
+  return std::numeric_limits&lt;double&gt;::max(); // unreachable
+}</code></pre>
+  <div class="two-col">
+    <div>
+      <h3>Complexity</h3>
+      <ul>
+        <li>Each distance query: O(U) uses x O(E log B) Dijkstra</li>
+        <li>Caching helps: O(B squared) entries cached</li>
+        <li>But <strong>worst case: O(B squared x E x log B)</strong> for full function</li>
+      </ul>
+      <p style="font-size:0.7em; margin-top:4px; color:#666;">U = uses/VReg, E = CFG edges, B = basic blocks</p>
+    </div>
+    <div>
+      <h3>Mode-Dependent Backedge Handling</h3>
+      <pre><code class="language-cpp">if (PI.Backedge)
+  if (gfxMode())
+    continue; // skips backedges</code></pre>
+      <p>In Graphics compatibility mode, Dijkstra skips backedges. In ML compatibility mode, backedges are traversable. This bifurcation means the shortest-path algorithm behaves differently depending on the active mode.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Graphics Lazy Architecture Deep Dive -->
+<section>
+  <h2 class="gfx" style="margin-bottom:4px;">Lazy Architecture: Per-Query Cost Structure</h2>
+  <p style="font-size:0.72em; margin:0 0 2px;"><code>initialize()</code> only assigns instruction IDs (<code>InstrToId</code>). <strong>Paths cache starts empty.</strong> All BB-to-BB distances are deferred to query time.</p>
+  <div class="two-col" style="gap:16px;">
+    <div style="flex:1.1;">
+      <h3 style="font-size:0.88em; margin:0 0 2px;">BFS in <code>mutPathInfoFor()</code></h3>
+      <pre style="font-size:0.44em; margin:2px 0;"><code class="language-cpp">PathInfo &mutPathInfoFor(From, To) {
+  auto I = Paths.find({From, To});
+  if (I != Paths.end()) return I->second;
+  PathInfo &Slot = Paths[{From, To}];
+  Slot.Edge = From->isSuccessor(To);
+  Slot.Backedge = calcIsBackedge(From, To);
+  Slot.Reachable = calcIsReachable(From, To);
+  //  ^^^ Full BFS traversal! O(V+E) per pair
+  Slot.LoopWeight = calcLoopWeight(From, To);
+  return Slot; // ShortestDistance still nullopt
+}</code></pre>
+    </div>
+    <div style="flex:1;">
+      <h3 style="font-size:0.88em; margin:0 0 2px;">Per-Query Call Chain</h3>
+      <div class="mermaid-output" id="m11"></div>
+    </div>
+  </div>
+  <h3 style="font-size:0.85em; margin:4px 0 2px;">Aggregate Cost: Dijkstra Combined with BFS Reachability Checks</h3>
+  <p style="font-size:0.6em; margin:0 0 2px; color:#666;">V = basic blocks (vertices), E = CFG edges</p>
+  <table class="comparison-table" style="font-size:0.58em; margin-top:0; width:100%;">
+    <tr><th>Step</th><th>What Happens</th><th>Cost</th><th>Example (50 blocks, 150 edges)</th></tr>
+    <tr><td>1. <code>getShortestPath(A,B)</code></td><td>Cache miss &rarr; Dijkstra</td><td>O(V log V)</td><td>~280 priority-queue ops</td></tr>
+    <tr><td>2. Dijkstra visits edge (X,Y)</td><td><code>pathInfoFor(X,Y)</code> &rarr; <strong>calcIsReachable = BFS</strong></td><td>O(V+E) <strong>per edge</strong></td><td>~200 nodes per BFS</td></tr>
+    <tr><td>3. <code>calcWeightedSize(Y,B)</code></td><td><code>pathInfoFor(Y,B)</code> &rarr; <strong>another BFS</strong></td><td>O(V+E) <strong>per visited node</strong></td><td>~200 nodes per BFS</td></tr>
+    <tr><td colspan="2" style="text-align:right;"><strong>Total per uncached Dijkstra</strong></td><td><strong>O(V&times;(V+E))</strong></td><td><strong>~50 BFS &times; 200 = ~10K node visits</strong></td></tr>
+  </table>
+  <div class="note-box" style="margin:4px 0 0; padding:4px 8px; font-size:0.66em;">
+    The effective per-query cost is <strong>O(V&times;(V+E))</strong> when including BFS reachability checks, compared to textbook Dijkstra's O(E log V). Results are cached after first access to each BB pair.
+  </div>
+</section>
+
+<!-- Graphics API -->
+<section>
+  <h2 class="gfx">Public API &mdash; Graphics NUA</h2>
+  <div class="api-box gfx-api"><strong>1. getNextUseDistance(Register, MI, Uses, UseOut) -> optional double</strong><br/>Distance from instruction to next use. Returns raw <code>double</code> distance or nullopt.</div>
+  <div class="api-box gfx-api"><strong>2. getUses(Register, LaneBitmask, MI) -> SmallVector MachineOperand*</strong><br/>Finds reachable uses for a register. Caller must gather uses before querying distance.</div>
+  <div class="api-box gfx-api"><strong>3. printFurthestDistancesAsJson(ostream, LiveIntervals*)</strong><br/>Debug output only. Not a query API.</div>
+  <h3 style="margin-top: 20px;">API Capability Comparison</h3>
+  <table class="comparison-table">
+    <tr><th>Capability</th><th class="ml-col">ML NUA</th><th class="gfx-col">Graphics NUA</th></tr>
+    <tr><td>Sorted subreg distances</td><td class="ml-col"><code>getSortedSubregUses()</code></td><td class="gfx-col">Not available</td></tr>
+    <tr><td>Block-level use summary</td><td class="ml-col"><code>usedInBlock()</code></td><td class="gfx-col">Not available</td></tr>
+    <tr><td>Per-instruction snapshots</td><td class="ml-col">O(1) lookup</td><td class="gfx-col">Recomputed per query</td></tr>
+    <tr><td>Distance ranking tiers</td><td class="ml-col">3-tier (finite/loop-exit/dead)</td><td class="gfx-col">Continuous double</td></tr>
+    <tr><td>Dead register detection</td><td class="ml-col"><code>isDead()</code></td><td class="gfx-col">Not available</td></tr>
+  </table>
+</section>
+
+<!-- Side-by-Side Comparison -->
+<section>
+  <h2>Side-by-Side Comparison</h2>
+  <table class="comparison-table">
+    <tr><th>Aspect</th><th class="ml-col">ML NUA</th><th class="gfx-col">Graphics NUA</th></tr>
+    <tr><td><strong>Algorithm</strong></td><td class="ml-col">Dataflow fixed-point iteration</td><td class="gfx-col">On-demand per-use Dijkstra</td></tr>
+    <tr><td><strong>Distance type</strong></td><td class="ml-col"><code>int64_t</code> (exact)</td><td class="gfx-col"><code>double</code> (floating point)</td></tr>
+    <tr><td><strong>Lane awareness</strong></td><td class="ml-col">Full lane-mask tracking</td><td class="gfx-col">Basic (in getUses only)</td></tr>
+    <tr><td><strong>Loop handling</strong></td><td class="ml-col">LoopTag (2^40) + pre-header truncation</td><td class="gfx-col">1000^depth exponential weight</td></tr>
+    <tr><td><strong>Per-instr data</strong></td><td class="ml-col">Snapshots (O(1) query)</td><td class="gfx-col">None (recompute each query)</td></tr>
+    <tr><td><strong>Subreg queries</strong></td><td class="ml-col"><code>getSortedSubregUses()</code></td><td class="gfx-col">Not available</td></tr>
+    <tr><td><strong>Block liveness</strong></td><td class="ml-col"><code>usedInBlock()</code></td><td class="gfx-col">Not available</td></tr>
+    <tr><td><strong>Distance ranking</strong></td><td class="ml-col">3-tier (finite / loop-exit / dead)</td><td class="gfx-col">Raw double (no tiers)</td></tr>
+    <tr><td><strong>Pass dependencies</strong></td><td class="ml-col">2 passes: SlotIndexes, LoopInfo</td><td class="gfx-col">5 passes: SlotIndexes, LoopInfo + LiveVariables, LiveIntervals, DomTree</td></tr>
+    <tr><td><strong>Compat modes</strong></td><td class="ml-col">None (unified)</td><td class="gfx-col">Graphics vs ML (separate code paths)</td></tr>
+  </table>
+</section>
+
+<!-- PART 3 HEADER -->
+<section data-background-color="#E8F5E9">
+  <h1 style="text-align:center;">Part 3</h1>
+  <h2 style="text-align:center; color: var(--neutral-color);">Integration Assessment</h2>
+  <p style="text-align:center;">Spiller API coverage and architectural trade-offs</p>
+</section>
+
+<!-- Spiller Requirements -->
+<section>
+  <h2>Spiller API Coverage Comparison</h2>
+  <p>The SSA Spiller (<code>AMDGPUSSARegisterSpiller.cpp</code>) makes these NUA calls:</p>
+  <table class="comparison-table">
+    <tr><th>Spiller Requirement</th><th>Location</th><th class="ml-col">ML NUA</th><th class="gfx-col">Graphics NUA</th></tr>
+    <tr><td><code>getNextUseDistance(Iterator, VMP)</code></td><td>sortRegSetByNextUse, L449</td><td class="verdict">O(1) lookup</td><td class="gfx-col">Not directly available</td></tr>
+    <tr><td><code>getNextUseDistance(MBB, VMP)</code></td><td>sortRegSetByNextUse, L447</td><td class="verdict">O(1) lookup</td><td class="gfx-col">Not directly available</td></tr>
+    <tr><td><code>getSortedSubregUses(Iterator/MBB, VMP)</code></td><td>getVMPsToSpill, L621-632</td><td class="verdict">Lane-sorted</td><td class="gfx-col">Not implemented</td></tr>
+    <tr><td><code>usedInBlock(MBB)</code></td><td>blockHasUse, L2280</td><td class="verdict">Precomputed set</td><td class="gfx-col">Not implemented</td></tr>
+    <tr><td>Three-tier distance ranking</td><td>Throughout spill selection</td><td class="verdict">0-65535 tiers</td><td class="gfx-col">Raw doubles</td></tr>
+    <tr><td><code>VRegMaskPair</code> integration</td><td>All spiller operations</td><td class="verdict">Native</td><td class="gfx-col">Uses raw Register</td></tr>
+  </table>
+</section>
+
+<!-- Difference 1: API Contract -->
+<section>
+  <h2>API Contract Differences</h2>
+  <div class="two-col">
+    <div>
+      <h3>What the Spiller Does</h3>
+      <pre><code class="language-cpp">// AMDGPUSSARegisterSpiller.cpp:446-450
+if (AtBlockEnd) {
+  Dist = NU->getNextUseDistance(MBB, VMP);
+} else {
+  Dist = NU->getNextUseDistance(
+    AfterCurrent, VMP);
+}</code></pre>
+      <p>Queries distance at <strong>specific instruction positions</strong> with <code>VRegMaskPair</code>.</p>
+    </div>
+    <div>
+      <h3>Graphics NUA API</h3>
+      <pre><code class="language-cpp">// Graphics NUA API:
+optional&lt;double&gt; getNextUseDistance(
+  Register LiveReg,     // raw register
+  const MachineInstr &CurMI,
+  const SmallVector&lt;const MachineOperand*&gt;
+    &Uses,              // caller provides uses
+  const MachineOperand **UseOut);</code></pre>
+      <p>Caller must gather all uses first, passes <code>Register</code> (not <code>VRegMaskPair</code>).</p>
+    </div>
+  </div>
+  <div class="note-box"><strong>Architectural difference:</strong> The Graphics NUA API places use-collection responsibility on the caller, while the ML NUA pre-computes and exposes distances directly. This reflects the fundamental architectural difference: pre-computed snapshots vs. on-demand computation.</div>
+</section>
+
+<!-- Difference 2: Subreg Spill Selection -->
+<section>
+  <h2>Subreg Spill Selection</h2>
+  <pre><code class="language-cpp">// AMDGPUSSARegisterSpiller.cpp:621-632  — getVMPsToSpill()
+if (AtBlockEnd)
+  SortedSubregs = NU->getSortedSubregUses(MBB, Candidate);
+else
+  SortedSubregs = NU->getSortedSubregUses(AfterCurrent, Candidate);
+
+// Then spill only the furthest-use lanes:
+for (VRegMaskPair SubVMP : SortedSubregs) {
+  VMPsToSpill.push_back(SubVMP);
+  if (enough_pressure_reduced) break;
+}</code></pre>
+  <div class="two-col">
+    <div><h3 class="ml">ML NUA</h3><p><code>getSortedSubregUses()</code> returns subregs sorted by distance (furthest first), enabling the spiller to spill <strong>only the lanes that free enough pressure</strong>.</p></div>
+    <div><h3 class="gfx">Graphics NUA</h3><p>The Graphics NUA operates on whole registers. Lane-level selection would require extending its data model.</p></div>
+  </div>
+  <div class="note-box"><strong>Design impact:</strong> For AMDGPU's wide registers (128-1024 bit), lane-level spill selection enables finer-grained pressure reduction.</div>
+</section>
+
+<!-- Difference 3: Block-Level Use Summaries -->
+<section>
+  <h2>Block-Level Use Summaries</h2>
+  <pre><code class="language-cpp">// AMDGPUSSARegisterSpiller.cpp:2280 — blockHasUse()
+bool HasUse = NU->usedInBlock(*BB).overlaps(SpilledVMP);</code></pre>
+  <div class="two-col">
+    <div><h3 class="ml">ML NUA</h3><ul><li><code>usedInBlock()</code> returns a precomputed <code>VRegMaskPairSet</code></li><li>O(1) lookup per block</li><li>Used by the reload optimizer's <strong>path-walking algorithm</strong></li><li>Quickly determines if a block has any use of a spilled register</li></ul></div>
+    <div><h3 class="gfx">Graphics NUA</h3><ul><li>Would need to iterate all uses: <code>MRI->use_nodbg_operands(Reg)</code></li><li>Check if any use is in the target block</li><li>No lane-mask overlap check available</li></ul></div>
+  </div>
+  <div class="note-box"><strong>Architectural difference:</strong> The ML NUA pre-computes block-level summaries for O(1) lookup. The Graphics NUA would require iterating the register's use list per query.</div>
+</section>
+
+<!-- Computation Model Comparison -->
+<section>
+  <h2>Computation Model Comparison</h2>
+  <table class="comparison-table">
+    <tr><th>Design Aspect</th><th class="ml-col">ML NUA</th><th class="gfx-col">Graphics NUA</th></tr>
+    <tr><td><strong>Computation model</strong></td><td class="ml-col">Run once, query many times</td><td class="gfx-col">Compute per query</td></tr>
+    <tr><td><strong>Data persistence</strong></td><td class="ml-col">Full result cached (snapshots + block summaries)</td><td class="gfx-col">Only path cache persists</td></tr>
+    <tr><td><strong>Caller responsibility</strong></td><td class="ml-col">Minimal &mdash; pass VRegMaskPair + instruction</td><td class="gfx-col">Heavy &mdash; gather uses, choose Register, provide MO</td></tr>
+    <tr><td><strong>SSA requirement</strong></td><td class="ml-col">Asserted: <code>assert</code> + <code>report_fatal_error</code></td><td class="gfx-col">Assumed (not explicitly checked)</td></tr>
+    <tr><td><strong>VRegMaskPair native</strong></td><td class="ml-col">Yes &mdash; all APIs accept VRegMaskPair</td><td class="gfx-col">No &mdash; uses raw Register + LaneBitmask separately</td></tr>
+  </table>
+  <div class="note-box"><strong>Pass coupling:</strong> 5 required analysis passes vs. 2 &mdash; see next slide for full breakdown.</div>
+</section>
+
+<!-- Pass Dependency Breakdown -->
+<section>
+  <h2>Pass Dependency Breakdown</h2>
+  <table class="comparison-table" style="font-size:0.7em;">
+    <tr><th>Analysis Pass</th><th class="ml-col">ML NUA</th><th class="gfx-col">Graphics NUA</th><th>Why the Graphics NUA needs it</th></tr>
+    <tr><td>SlotIndexes</td><td class="ml-col">&#10004;</td><td class="gfx-col">&#10004;</td><td>Instruction numbering</td></tr>
+    <tr><td>MachineLoopInfo</td><td class="ml-col">&#10004;</td><td class="gfx-col">&#10004;</td><td>Loop depth detection</td></tr>
+    <tr style="background:#fff3e0;"><td><strong>LiveVariables</strong></td><td class="ml-col">&mdash;</td><td class="gfx-col">&#10004;</td><td>Kill flags for use enumeration</td></tr>
+    <tr style="background:#fff3e0;"><td><strong>LiveIntervals</strong></td><td class="ml-col">&mdash;</td><td class="gfx-col">&#10004;</td><td>Interval queries in path weighting</td></tr>
+    <tr style="background:#fff3e0;"><td><strong>MachineDominatorTree</strong></td><td class="ml-col">&mdash;</td><td class="gfx-col">&#10004;</td><td>Reachability (BFS in calcIsReachable)</td></tr>
+  </table>
+  <div style="margin-top:0.4em;">
+    <div class="note-box" style="font-size:0.65em;"><strong>Key insight:</strong> The ML NUA's dataflow iteration computes reachability and liveness implicitly &mdash; no DomTree or LiveVariables needed. The Graphics NUA's Dijkstra-based approach requires explicit dominance/reachability info, adding 3 extra passes with their own maintenance and pass-ordering constraints.</div>
+  </div>
+  <p style="font-size:0.6em;margin-top:0.3em;color:#aaa;">Note: The <em>SSA Spiller</em> (consumer) also requires LiveIntervals &mdash; but that is a <strong>spiller</strong> dependency, not an <strong>NUA</strong> dependency. Clean separation matters.</p>
+</section>
+
+<!-- Dual-Mode Architecture -->
+<section>
+  <h2>Dual-Mode Architecture</h2>
+  <pre><code class="language-cpp">enum CompatibilityMode { MachineLearning, Graphics };
+// The Graphics NUA has TWO separate code paths:
+
+if (mlMode()) {
+  // Different distance calculation
+  // Unweighted paths within same loop
+  // Preheader distance for deeper loops
+  // Special "next iteration" handling
+} else { // gfxMode()
+  // Weighted paths
+  // Skips backedges
+  // Different reachability checks
+}</code></pre>
+  <div class="two-col">
+    <div><h3>Maintenance Considerations</h3><ul><li>Two separate code paths to maintain</li><li>The two modes use different edge-traversal rules</li><li>Switching modes <strong>clears all caches</strong></li></ul></div>
+    <div><h3>ML NUA Approach</h3><ul><li><strong>One algorithm</strong>, one code path</li><li>Loop handling via LoopTag &mdash; uniform</li><li>No mode switching needed</li><li>Predictable behavior on all CFGs</li></ul></div>
+  </div>
+</section>
+
+<!-- Design Distance Summary -->
+<section>
+  <h2>Design Distance Summary</h2>
+  <p>Key architectural differences identified by independent analysis:</p>
+  <table class="comparison-table">
+    <tr><th>Dimension</th><th class="ml-col">ML NUA</th><th class="gfx-col">Graphics NUA</th></tr>
+    <tr><td><strong>Algorithm</strong></td><td class="ml-col">Classical dataflow with provable convergence</td><td class="gfx-col">Demand-driven Dijkstra with 7-level call hierarchy</td></tr>
+    <tr><td><strong>Distance domain</strong></td><td class="ml-col"><code>int64_t</code> with additive loop sentinels</td><td class="gfx-col"><code>double</code> with multiplicative 1000^depth</td></tr>
+    <tr><td><strong>Subreg tracking</strong></td><td class="ml-col">Full lane-mask per record</td><td class="gfx-col">Not implemented (parameter accepted, unused)</td></tr>
+    <tr><td><strong>Invariant style</strong></td><td class="ml-col">Explicit (SSA asserted, setPreservesAll)</td><td class="gfx-col">Implicit (assumed, not checked)</td></tr>
+    <tr><td><strong>Code path</strong></td><td class="ml-col">Unified algorithm</td><td class="gfx-col">gfx/ML bifurcation across 8+ functions</td></tr>
+    <tr><td><strong>Pass deps</strong></td><td class="ml-col">2 passes</td><td class="gfx-col">5 passes (+ LiveVariables, LiveIntervals, DomTree)</td></tr>
+    <tr><td><strong>Design docs</strong></td><td class="ml-col">6 documents in ssa-spiller-docs/04-Design/</td><td class="gfx-col">None</td></tr>
+  </table>
+</section>
+
+<!-- ML NUA Coverage of Graphics NUA Use Cases -->
+<section>
+  <h2>ML NUA Coverage of Graphics NUA Use Cases</h2>
+  <table class="comparison-table">
+    <tr><th>Graphics NUA Requirement</th><th>ML NUA Coverage</th></tr>
+    <tr><td><code>getNextUseDistance(Register, MI, Uses)</code></td><td class="verdict">getNextUseDistance(MI.getIterator(), VMP) &mdash; simpler, O(1)</td></tr>
+    <tr><td><code>getUses(Register, LaneMask, MI)</code></td><td class="verdict">Not needed &mdash; ML NUA precomputes distances, no use-gathering needed</td></tr>
+    <tr><td>Loop-aware distances</td><td class="verdict">LoopTag encoding with three-tier ranking</td></tr>
+    <tr><td>Distance for spill selection</td><td class="verdict">Direct: getNextUseDistance() returns ranked value ready for Belady's</td></tr>
+    <tr><td>Dead register detection</td><td class="verdict">isDead() or distance == 65535</td></tr>
+    <tr><td>JSON debug output</td><td class="verdict">dumpAllNextUseDistances() plus printVregDistances()</td></tr>
+  </table>
+  <div class="note-box" style="text-align:center;"><strong>The ML NUA's API covers all use cases required by the Graphics NUA's consumers,</strong> with the additional capability of lane-level queries and pre-computed block summaries.</div>
+</section>
+
+<!-- Performance Comparison -->
+<section>
+  <h2>Performance Model Comparison</h2>
+  <div class="two-col">
+    <div>
+      <h3 class="ml">ML NUA: Amortized</h3>
+      <div class="mermaid-output" id="m9"></div>
+    </div>
+    <div>
+      <h3 class="gfx">Graphics NUA: Per-Query</h3>
+      <div class="mermaid-output" id="m10"></div>
+    </div>
+  </div>
+  <div class="highlight-block" style="padding:8px; font-size:0.7em;">
+    <strong>Legend:</strong> D = iterations (&le;3), B = blocks, I = instrs/block, V = VRegs, R = subreg records, U = uses/VReg, N = queries, E = CFG edges<br/>
+    <strong>Typical shader</strong> (D=3, B=50, I=30, V=100, R=3, U=5, E&asymp;150, N=150K):
+    <table style="width:100%; margin-top:4px; border-collapse:collapse;">
+      <tr style="background:#e3f2fd;">
+        <td style="padding:3px 6px; border:1px solid #90caf9;"><strong>ML NUA (total)</strong></td>
+        <td style="padding:3px 6px; border:1px solid #90caf9;">D&times;B&times;I&times;V + N&times;R</td>
+        <td style="padding:3px 6px; border:1px solid #90caf9;"><strong style="color:#1565C0;">~8M simple int ops</strong> (done once)</td>
+      </tr>
+      <tr style="background:#fff3e0;">
+        <td style="padding:3px 6px; border:1px solid #ffe082;"><strong>Graphics NUA (cold)</strong></td>
+        <td style="padding:3px 6px; border:1px solid #ffe082;">N&times;U&times;E&times;log B</td>
+        <td style="padding:3px 6px; border:1px solid #ffe082;"><strong style="color:#E65100;">~630M Dijkstra ops</strong></td>
+      </tr>
+      <tr style="background:#f5f5f5;">
+        <td style="padding:3px 6px; border:1px solid #ccc;"><strong>Graphics NUA (cached)</strong></td>
+        <td style="padding:3px 6px; border:1px solid #ccc;">N&times;U&times;O(1)</td>
+        <td style="padding:3px 6px; border:1px solid #ccc;"><strong>~750K hash probes</strong> (unrealistic: unbounded cache)</td>
+      </tr>
+    </table>
+    ML NUA operations are integer comparisons; Graphics NUA operations include Dijkstra relaxation and hash probes.
+  </div>
+</section>
+
+<!-- Benchmark Methodology & Results -->
+<section>
+  <h2>Empirical Benchmark: Full Test Suite</h2>
+  <h3>Methodology</h3>
+  <ul style="font-size:0.75em;">
+    <li><strong>Target:</strong> <code>gfx1200</code>, Debug builds, median of 3 runs, <code>real</code> wall-clock time</li>
+    <li><span class="ml">ML NUA:</span> <code>llc -run-pass=amdgpu-next-use</code> <strong>without dump</strong> &mdash; analysis runs eagerly, all distances pre-computed. Ready for O(1) queries.</li>
+    <li><span class="gfx">Graphics NUA:</span> <code>llc -run-pass=amdgpu-next-use-analysis -amdgpu-next-use-analysis-dump-distance</code> &mdash; dump flag forces <code>populatePathTable()</code> (all-pairs Dijkstra) + <code>printAllDistances()</code> (per-register queries), otherwise the pass does <strong>almost no work</strong>.</li>
+    <li><span class="warn">Fairness note:</span> the Graphics NUA dump includes some output formatting overhead; however, the ML NUA measurement <em>also excludes</em> dump overhead, so both sides have a comparable advantage.</li>
+  </ul>
+  <div class="two-col" style="gap:12px;">
+    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
+      <tr><th>Test Case</th><th>Size</th><th>Sub</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
+      <tr><td>nested-loops-side-exits-b</td><td>664K</td><td>Yes</td><td class="ml-col">0.204</td><td class="gfx-col">0.323</td><td class="verdict"><strong>1.58</strong></td></tr>
+      <tr><td>spill-vreg-many-lanes</td><td>314K</td><td>Yes</td><td class="ml-col">0.318</td><td class="gfx-col">0.340</td><td class="verdict">1.06</td></tr>
+      <tr><td>test1_ssa</td><td>193K</td><td>Yes</td><td class="ml-col">0.315</td><td class="gfx-col">0.331</td><td class="verdict">1.05</td></tr>
+      <tr><td>loop_nested_3_outer_loops</td><td>195K</td><td>Yes</td><td class="ml-col">0.142</td><td class="gfx-col">0.158</td><td class="verdict">1.11</td></tr>
+      <tr><td>if_else_loops_2_outer</td><td>186K</td><td>Yes</td><td class="ml-col">0.134</td><td class="gfx-col">0.165</td><td class="verdict"><strong>1.23</strong></td></tr>
+      <tr><td>3_loops_seq_in_outer</td><td>161K</td><td>Yes</td><td class="ml-col">0.139</td><td class="gfx-col">0.154</td><td class="verdict">1.10</td></tr>
+      <tr><td>nested-loops-side-exits-a</td><td>121K</td><td>Yes</td><td class="ml-col">0.132</td><td class="gfx-col">0.154</td><td class="verdict"><strong>1.16</strong></td></tr>
+      <tr><td>complex-single-loop-b</td><td>83K</td><td>Yes</td><td class="ml-col">0.134</td><td class="gfx-col">0.146</td><td class="verdict">1.08</td></tr>
+      <tr><td>inner_cfg_2_nested_loops</td><td>66K</td><td>Yes</td><td class="ml-col">0.124</td><td class="gfx-col">0.132</td><td class="verdict">1.06</td></tr>
+      <tr><td>complex-ctrl-flow-14blk</td><td>55K</td><td>Few</td><td class="ml-col">0.134</td><td class="gfx-col">0.148</td><td class="verdict">1.10</td></tr>
+    </table>
+    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
+      <tr><th>Test Case</th><th>Size</th><th>Sub</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
+      <tr><td>triple-nested-loops</td><td>55K</td><td>Few</td><td class="ml-col">0.124</td><td class="gfx-col">0.130</td><td class="verdict">1.04</td></tr>
+      <tr><td>complex-ctrl-flow-11blk</td><td>46K</td><td>Some</td><td class="ml-col">0.129</td><td class="gfx-col">0.138</td><td class="verdict">1.06</td></tr>
+      <tr><td>complex-single-loop-a</td><td>53K</td><td>Few</td><td class="ml-col">0.123</td><td class="gfx-col">0.128</td><td class="verdict">1.04</td></tr>
+      <tr><td>complex-single-loop</td><td>32K</td><td>Few</td><td class="ml-col">0.119</td><td class="gfx-col">0.129</td><td class="verdict">1.08</td></tr>
+      <tr><td>multi_exit_loop</td><td>43K</td><td>Few</td><td class="ml-col">0.121</td><td class="gfx-col">0.130</td><td class="verdict">1.07</td></tr>
+      <tr><td>sequence_2_loops</td><td>43K</td><td>Few</td><td class="ml-col">0.118</td><td class="gfx-col">0.127</td><td class="verdict">1.07</td></tr>
+      <tr><td>test0_ssa</td><td>25K</td><td>Yes</td><td class="ml-col">0.123</td><td class="gfx-col">0.127</td><td class="verdict">1.03</td></tr>
+      <tr><td>linear-block-distances</td><td>26K</td><td>Few</td><td class="ml-col">0.122</td><td class="gfx-col">0.127</td><td class="verdict">1.04</td></tr>
+      <tr><td>3-tier-ranking-nested</td><td>8K</td><td>No</td><td class="ml-col">0.101</td><td class="gfx-col">0.118</td><td class="verdict"><strong>1.16</strong></td></tr>
+      <tr><td>simple-loop-3blocks</td><td>13K</td><td>No</td><td class="ml-col">0.113</td><td class="gfx-col">0.121</td><td class="verdict">1.07</td></tr>
+    </table>
+  </div>
+  <div style="text-align:center; margin-top:8px;">
+    <span style="font-size:0.8em;">ML NUA is faster on all 20 test cases (1.03&times; &ndash; 1.58&times; range)</span>
+    <span style="font-size:0.7em; margin-left:12px;">Times in seconds (median of 3) &nbsp;|&nbsp; <code>-mcpu=gfx1200</code>, Debug builds</span>
+  </div>
+</section>
+
+<!-- Benchmark Analysis -->
+<section>
+  <h2>Benchmark Analysis</h2>
+  <div class="two-col" style="font-size:0.82em;">
+    <div>
+      <h3 style="margin-bottom:4px;">Performance Characteristics</h3>
+      <ul style="margin-top:0;">
+        <li><strong>Dataflow vs. Dijkstra:</strong> the ML NUA fixed-point iteration processes all vregs in one CFG pass; the Graphics NUA runs separate Dijkstra per block pair</li>
+        <li><strong>No per-query overhead:</strong> ML NUA analysis is complete &mdash; queries are O(1). Graphics NUA must run <code>populatePathTable()</code> + iterate all defs</li>
+        <li><strong>Integer vs. float:</strong> <code>int64_t</code> comparisons are cheaper than <code>double</code> arithmetic with <code>pow(1000, depth)</code></li>
+      </ul>
+      <h3 style="margin-bottom:4px;">Why Gap Is Modest on Small Tests</h3>
+      <ul style="margin-top:0;">
+        <li>MIR parsing + pass framework startup dominates (~100ms baseline)</li>
+        <li>On 8&ndash;55 KB tests, both NUAs add <strong>&lt;30ms</strong> above baseline</li>
+        <li>The true algorithm gap is masked by fixed overhead</li>
+      </ul>
+    </div>
+    <div>
+      <h3 style="margin-bottom:4px;">Subreg Workload Note</h3>
+      <ul style="margin-top:0;">
+        <li>The ML NUA computes <strong>lane-mask&ndash;aware distances</strong> &mdash; included in these timings</li>
+        <li>The Graphics NUA does <strong>not support subregisters</strong> &mdash; its timings reflect no subreg work</li>
+        <li>The ML NUA includes subreg computation in these timings; the Graphics NUA does not, as it lacks subreg support</li>
+      </ul>
+      <h3 class="warn" style="margin-bottom:4px;">Fairness Note</h3>
+      <ul style="margin-top:0;">
+        <li>The Graphics NUA <code>-dump-distance</code> includes output formatting overhead not present in production</li>
+        <li>The ML NUA measurement <em>also</em> excludes dump overhead &mdash; both sides benefit equally</li>
+        <li>In production, Graphics NUA cost comes from spiller queries (same Dijkstra work, distributed across calls)</li>
+      </ul>
+    </div>
+  </div>
+  <div class="verdict-box" style="margin-top:12px; padding:10px; font-size:0.85em;">
+    <strong>Bottom line:</strong> The ML NUA's upfront analysis including subreg distances completes in <strong>1.03&times;&ndash;1.58&times; less time</strong> than the Graphics NUA's forced full computation. The advantage correlates with CFG complexity.
+  </div>
+</section>
+
+<!-- Performance Under Spiller Query Patterns -->
+<section>
+  <h2>Performance Under Spiller Query Patterns</h2>
+  <div style="background:#e3f2fd; border-left:4px solid var(--ml-color); padding:6px 10px; font-size:0.78em; margin-bottom:6px;">
+    <strong>At every spill point</strong> the spiller must query NUD for <strong><em>every</em> live register</strong> to pick the best candidate (Belady&rsquo;s MIN). On <strong>gfx900</strong> (256 VGPRs per EU):
+  </div>
+  <div class="highlight-block" style="font-size:0.62em; padding:4px 8px; margin-bottom:4px;">
+    <strong>Typical AMDGPU kernel:</strong> B=100 blocks, I=20 instrs/block, E=150 CFG edges, U&asymp;5 uses/VReg, R&asymp;2 subreg records/VReg.<br/>
+    <strong>Per-query cost:</strong>
+    ML NUA: O(R) = <strong>2 ops</strong> (materialization).
+    Graphics NUA: O(V&times;(V+E)) = 100&times;250 = <strong>25K ops</strong> per uncached Dijkstra+BFS.
+  </div>
+  <table class="comparison-table" style="font-size:0.58em; margin-bottom:4px;">
+    <tr><th>Occupancy</th><th>VGPRs/wave</th><th>Live regs</th><th class="ml-col">ML NUA queries</th><th class="gfx-col">Graphics NUA queries</th><th>Real ops (est.)</th></tr>
+    <tr>
+      <td><strong>4 waves/EU</strong> (typical)</td><td>64</td><td>~60+</td>
+      <td class="ml-col">64 &times; O(1)</td>
+      <td class="gfx-col">64 &times; Dijkstra+BFS</td>
+      <td><span style="color:var(--ml-color);font-weight:bold;">64&times;2 = ~128</span> vs <span style="color:var(--gfx-color);font-weight:bold;">~40&times;25K = ~1M</span></td>
+    </tr>
+    <tr>
+      <td><strong>1 wave/EU</strong> (max regs)</td><td>256</td><td>~250+</td>
+      <td class="ml-col">256 &times; O(1)</td>
+      <td class="gfx-col">256 &times; Dijkstra+BFS</td>
+      <td><span style="color:var(--ml-color);font-weight:bold;">256&times;2 = ~512</span> vs <span style="color:var(--gfx-color);font-weight:bold;">~70&times;25K = ~1.75M</span></td>
+    </tr>
+  </table>
+  <table class="comparison-table" style="font-size:0.58em;">
+    <tr><th>Aspect</th><th class="ml-col">Precomputed (ML NUA)</th><th class="gfx-col">On-demand (Graphics NUA)</th><th>Real ops (est.)</th></tr>
+    <tr>
+      <td><strong>One spill decision</strong></td>
+      <td class="ml-col">64&ndash;256 &times; O(1) snapshot lookups</td>
+      <td class="gfx-col">64&ndash;256 &times; O(V&times;(V+E)) each</td>
+      <td><span style="color:var(--ml-color);">128&ndash;512</span> vs <span style="color:var(--gfx-color);">1M&ndash;1.75M</span></td>
+    </tr>
+    <tr>
+      <td><strong>Repeated spill points</strong></td>
+      <td class="ml-col">Still O(1) &mdash; data already computed</td>
+      <td class="gfx-col">Cache helps same BB pairs; new points &rarr; new Dijkstra</td>
+      <td>&mdash;</td>
+    </tr>
+    <tr>
+      <td><strong>Total NUA cost</strong></td>
+      <td class="ml-col">One upfront pass, amortized</td>
+      <td class="gfx-col">Grows with number of spill decisions</td>
+      <td>&mdash;</td>
+    </tr>
+  </table>
+  <div class="note-box" style="margin-top:6px; font-size:0.65em;">
+    <strong>Key insight:</strong> At spill decision points, the spiller queries distances for all live registers simultaneously (Belady's MIN). This workload pattern favors the pre-computed model, since all distances are already available. The heavier the spilling, the larger the advantage of pre-computation over on-demand evaluation.
+  </div>
+</section>
+
+<!-- Summary -->
+<section>
+  <h2>Summary: Architectural Differences</h2>
+  <ol>
+    <li><span class="tag tag-note">ARCH</span> <strong>Classical dataflow with provable convergence</strong> vs. demand-driven Dijkstra with 7-level call hierarchy</li>
+    <li><span class="tag tag-note">DOMAIN</span> <strong>Integer arithmetic</strong> (<code>int64_t</code>) with additive loop sentinels vs. floating-point (<code>double</code>) with multiplicative 1000^depth encoding</li>
+    <li><span class="tag tag-note">LANE</span> <strong>Full lane-mask tracking</strong> throughout vs. no subreg-level distance computation</li>
+    <li><span class="tag tag-note">INVAR</span> <strong>Explicit invariant enforcement</strong> (SSA asserted, setPreservesAll) vs. implicit (assumed, not checked)</li>
+    <li><span class="tag tag-note">UNITY</span> <strong>Single unified algorithm</strong> vs. gfx/ML bifurcation across 8+ functions</li>
+    <li><span class="tag tag-note">DEPS</span> <strong>2 required passes</strong> vs. 5 (extra LiveVariables, LiveIntervals, DomTree)</li>
+    <li><span class="tag tag-note">DOCS</span> <strong>Comprehensive design documentation</strong> (6 documents) vs. no design documentation</li>
+  </ol>
+</section>
+
+<!-- ===== PART 4: ANALYSIS & FINAL DECISION ===== -->
+
+<!-- PART 4 HEADER -->
+<section data-background-color="#E8EAF6">
+  <h1 style="text-align:center;">Part 4</h1>
+  <h2 style="text-align:center; color: var(--neutral-color);">Analysis &amp; Final Decision</h2>
+  <p style="text-align:center;">Independent analysis, updated benchmarks, technical decision</p>
+</section>
+
+<!-- Independent Analysis Process -->
+<section>
+  <h2>Independent Analysis Process</h2>
+  <div class="two-col">
+    <div>
+      <h3>Methodology</h3>
+      <ul>
+        <li><strong>Two independent implementations</strong> developed separately</li>
+        <li><strong>Independent analysis</strong> assessed each implementation&rsquo;s architecture, correctness, and maintainability</li>
+        <li><strong>Standardized benchmarks</strong> run on identical hardware, configurations, and test suite</li>
+        <li><strong>Final decision</strong> based on combined evidence from analysis and benchmarks</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Analysis Dimensions</h3>
+      <table class="comparison-table" style="font-size:0.75em;">
+        <tr><th>Dimension</th><th>Evaluated</th></tr>
+        <tr><td>Architecture &amp; algorithm design</td><td class="verdict">&#10004;</td></tr>
+        <tr><td>Correctness guarantees</td><td class="verdict">&#10004;</td></tr>
+        <tr><td>Spiller API coverage</td><td class="verdict">&#10004;</td></tr>
+        <tr><td>Pass dependencies</td><td class="verdict">&#10004;</td></tr>
+        <tr><td>Lane-mask / subreg support</td><td class="verdict">&#10004;</td></tr>
+        <tr><td>Performance benchmarks</td><td class="verdict">&#10004;</td></tr>
+        <tr><td>Design documentation</td><td class="verdict">&#10004;</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- Updated Benchmark: Validation Note -->
+<section>
+  <h2>Updated Benchmark Results</h2>
+  <p style="font-size:0.78em;">Benchmarks re-run after competitor update (Feb&nbsp;9,&nbsp;2026). Debug builds, <code>-mcpu=gfx1200</code>, median of 3 runs.</p>
+  <div class="note-box" style="font-size:0.72em; padding:6px 10px; margin-bottom:6px;">
+    <strong>Validation note:</strong> The competitor&rsquo;s update replaced <code>DT-&gt;dominates()</code> with a new <code>instrsAreInOrder()</code> method to fix intra-block instruction ordering.
+    This fix introduced a regression: <strong>9&thinsp;/&thinsp;20 tests now crash</strong> (<code>assert(D &gt;= 0)</code> in <code>calcDistanceToUse()</code>).
+    All 9 crashing tests involve loops (nested, multi-exit, or sequential). 1 additional test is invalid in both implementations (malformed SSA).
+    ML NUA: <strong>0&thinsp;/&thinsp;20 crashes</strong>.
+  </div>
+  <div class="verdict-box" style="padding:8px; font-size:0.82em;">
+    <strong>10&thinsp;/&thinsp;10 valid tests: ML NUA is faster or equal</strong> (1.05&times;&ndash;1.44&times;).<br/>
+    9 additional tests crash in Graphics NUA only. 1 test invalid in both (malformed SSA).
+  </div>
+</section>
+
+<!-- Updated Benchmark: Full 20-test Table -->
+<section>
+  <h2>Updated Benchmark: Full Test Suite (20 tests)</h2>
+  <div class="two-col" style="gap:12px;">
+    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
+      <tr><th>Test Case</th><th>Size</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
+      <tr><td>nested-loops-side-exits-b</td><td>664K</td><td class="ml-col">0.204</td><td class="gfx-col">0.294</td><td class="verdict"><strong>1.44</strong></td></tr>
+      <tr><td>spill-vreg-many-lanes</td><td>314K</td><td class="ml-col">0.321</td><td class="gfx-col">0.339</td><td class="verdict">1.05</td></tr>
+      <tr><td>test1_ssa</td><td>193K</td><td class="ml-col">0.316</td><td class="gfx-col">0.335</td><td class="verdict">1.06</td></tr>
+      <tr><td>loop_nested_3_outer_loops</td><td>195K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>if_else_loops_2_outer</td><td>186K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>3_loops_seq_in_outer</td><td>161K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>nested-loops-side-exits-a</td><td>121K</td><td class="ml-col">0.136</td><td class="gfx-col">0.153</td><td class="verdict">1.12</td></tr>
+      <tr><td>complex-single-loop-b</td><td>83K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>inner_cfg_2_nested_loops</td><td>66K</td><td class="ml-col">0.125</td><td class="gfx-col">0.133</td><td class="verdict">1.06</td></tr>
+      <tr><td>complex-ctrl-flow-14blk</td><td>55K</td><td class="ml-col">0.134</td><td class="gfx-col">0.149</td><td class="verdict">1.11</td></tr>
+    </table>
+    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
+      <tr><th>Test Case</th><th>Size</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
+      <tr><td>triple-nested-loops</td><td>55K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>complex-ctrl-flow-11blk</td><td>46K</td><td class="ml-col">0.129</td><td class="gfx-col">0.140</td><td class="verdict">1.08</td></tr>
+      <tr><td>complex-single-loop-a</td><td>53K</td><td class="ml-col">0.123</td><td class="gfx-col">0.132</td><td class="verdict">1.07</td></tr>
+      <tr><td>complex-single-loop</td><td>32K</td><td class="ml-col">0.120</td><td class="gfx-col">0.128</td><td class="verdict">1.06</td></tr>
+      <tr><td>multi_exit_loop</td><td>43K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>sequence_2_loops</td><td>43K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>test0_ssa</td><td>25K</td><td class="invalid-col">Invalid SSA</td><td class="invalid-col">Invalid SSA</td><td class="invalid-col">&mdash;</td></tr>
+      <tr><td>linear-block-distances</td><td>26K</td><td class="ml-col">0.121</td><td class="gfx-col">0.128</td><td class="verdict">1.05</td></tr>
+      <tr><td>3-tier-ranking-nested</td><td>8K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>simple-loop-3blocks</td><td>13K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+    </table>
+  </div>
+  <div style="text-align:center; margin-top:8px; font-size:0.75em;">
+    <span class="good"><strong>10 valid:</strong> ML NUA faster (1.05&times;&ndash;1.44&times;)</span> &nbsp;|&nbsp;
+    <span class="bad"><strong>9 crash:</strong> Graphics NUA only (assert failure in loops)</span> &nbsp;|&nbsp;
+    <span style="color:#888;">1 invalid: both fail (malformed SSA)</span>
+  </div>
+</section>
+
+<!-- Benchmark Visualization -->
+<section>
+  <h2>Performance Gap vs. Input Characteristics</h2>
+  <div class="two-col" style="gap:20px;">
+    <div>
+      <h3 style="text-align:center; font-size:0.85em; margin-bottom:2px;">Input Size (KB) vs. Performance Ratio</h3>
+      <canvas id="chart-size" width="520" height="340" style="background:#fafafa; border:1px solid #ddd; border-radius:4px;"></canvas>
+    </div>
+    <div>
+      <h3 style="text-align:center; font-size:0.85em; margin-bottom:2px;">Subreg Operand Count vs. Performance Ratio</h3>
+      <canvas id="chart-subreg" width="520" height="340" style="background:#fafafa; border:1px solid #ddd; border-radius:4px;"></canvas>
+    </div>
+  </div>
+  <div class="slide-note">
+    Data from initial benchmark round (20 tests, all valid). Ratio = Graphics&nbsp;NUA time / ML&nbsp;NUA time. Values &gt; 1.0 mean ML&nbsp;NUA is faster.
+    Subreg operand counts measured by counting <code>.sub*</code> operands in each MIR test file. Trend line: least-squares linear regression.
+  </div>
+</section>
+
+<!-- Competitor Update Acknowledgment -->
+<section>
+  <h2>Competitor Update &amp; Impact</h2>
+  <div class="two-col">
+    <div>
+      <h3>Improvements in Updated Graphics NUA</h3>
+      <ul>
+        <li><strong>Performance optimizations:</strong> BB size caching, BFS cache in reachability checks, register use caching, single-block loop early exit</li>
+        <li><strong>Partial subreg support:</strong> Lane-mask parameter added to the distance computation pipeline</li>
+        <li><strong>Instruction ordering fix:</strong> Replaced <code>DT-&gt;dominates()</code> with <code>instrsAreInOrder()</code> to correct intra-block ordering</li>
+      </ul>
+      <p style="font-size:0.75em; color:var(--note);">These are positive engineering steps.</p>
+      <div style="background:#FFEBEE; border:1px solid var(--bad); border-radius:6px; padding:6px 10px; margin-top:8px; font-size:0.72em;">
+        <strong style="color:var(--bad);">Regression introduced:</strong> The ordering fix causes <strong>9&thinsp;/&thinsp;20 tests to crash</strong> (<code>assert(D&nbsp;&gt;=&nbsp;0)</code>). All crashing tests involve loops &mdash; the interaction between <code>instrsAreInOrder()</code> and loop-related use filtering produces negative distances. ML&nbsp;NUA: <strong>0&thinsp;/&thinsp;20 crashes</strong>.
+      </div>
+    </div>
+    <div>
+      <h3>Impact on Decision</h3>
+      <ul>
+        <li><strong>Correctness regression:</strong> 9/20 tests crash after update (was 0/20 before); indicates fragility in case-dispatch distance model</li>
+        <li><strong>Performance gap unchanged:</strong> ML NUA remains faster on all valid tests (1.05&times;&ndash;1.44&times;)</li>
+        <li><strong>Architectural gap unchanged:</strong> No backward dataflow, no per-instruction snapshots, no three-tier ranking, no <code>usedInBlock()</code></li>
+        <li><strong>Pass dependency gap unchanged:</strong> 5 passes vs. 2</li>
+        <li><strong>Lane-mask depth:</strong> Filtering-level only; core Dijkstra remains lane-agnostic</li>
+      </ul>
+      <div class="note-box" style="margin-top:8px; font-size:0.8em;">
+        The competitor improvements are individually sound but do not close the architectural gap. The original performance direction is confirmed.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Technical Decision -->
+<section>
+  <h2>Technical Decision</h2>
+  <div class="verdict-box" style="font-size:1.1em; padding:20px;">
+    <strong>The ML NUA (Implementation&nbsp;A) is the technically stronger implementation.</strong>
+  </div>
+  <h3 style="margin-top:16px;">Decision Basis</h3>
+  <table class="comparison-table" style="font-size:0.78em;">
+    <tr><th>Criterion</th><th>Evidence</th></tr>
+    <tr><td><strong>Architecture</strong></td><td>Classical dataflow with provable convergence vs. demand-driven Dijkstra with 7-level call hierarchy</td></tr>
+    <tr><td><strong>Correctness</strong></td><td>0/20 crashes vs. 9/20 crashes after competitor update; explicit SSA invariant enforcement; unified algorithm with no mode bifurcation</td></tr>
+    <tr><td><strong>Performance</strong></td><td>Faster or equal on 10/10 valid tests (1.05&times;&ndash;1.44&times; range); advantage grows with CFG complexity</td></tr>
+    <tr><td><strong>Maintainability</strong></td><td>2 pass dependencies vs. 5; single code path vs. gfx/ML bifurcation; comprehensive design docs</td></tr>
+    <tr><td><strong>Spiller integration</strong></td><td>Native VRegMaskPair API; O(1) snapshots; lane-sorted subreg queries; precomputed block summaries</td></tr>
+  </table>
+  <div class="note-box" style="margin-top:12px; font-size:0.82em;">
+    This decision is based on independent analysis and two rounds of benchmarks (pre- and post-competitor update). The competitor&rsquo;s recent improvements are acknowledged but do not change the conclusion.
+  </div>
+</section>
+
+<!-- Conclusion -->
+<section data-background-color="#1565C0">
+  <h1 style="color: white; text-align: center;">Conclusion</h1>
+  <div style="background: #fff; border-radius: 12px; padding: 20px 24px; margin: 16px 24px;">
+    <h2 style="text-align: center; color: var(--neutral-color); margin-bottom:12px;">Final Decision: The ML NUA is the technically stronger implementation</h2>
+    <ul style="color: #333; font-size:0.88em; max-width: 85%; margin: 0 auto;">
+      <li>Well-structured <strong>dataflow analysis</strong> with clear theoretical foundations, explicit invariants, and subreg-level precision</li>
+      <li><strong>Correctness</strong>: 0/20 test crashes vs. 9/20 after competitor update; regression-free across all loop topologies</li>
+      <li><strong>Unified algorithm</strong>, minimal pass dependencies, integer arithmetic</li>
+      <li><strong>Performance</strong>: faster or equal on all valid tests across two benchmark rounds, including after competitor improvements</li>
+      <li><strong>Spiller integration</strong>: native VRegMaskPair API, O(1) snapshots, lane-sorted subreg queries</li>
+      <li>Comprehensive <strong>design documentation</strong> supports auditability and long-term maintenance</li>
+    </ul>
+    <div style="background:#e3f2fd; border:2px solid var(--ml-color); border-radius:8px; padding:10px; margin-top:16px; text-align:center; font-size:1em;">
+      <span style="color:#000;">Based on independent analysis and repeated benchmarks, the dataflow-based architecture provides stronger correctness guarantees, finer-grained analysis, and better integration with the SSA Spiller&rsquo;s requirements.</span>
+    </div>
+  </div>
+</section>
+
+<!-- Appendix -->
+<section>
+  <h2>Appendix: Source Code References</h2>
+  <table class="comparison-table" style="font-size: 0.7em;">
+    <tr><th>Component</th><th class="ml-col">ML NUA</th><th class="gfx-col">Graphics NUA</th></tr>
+    <tr><td>NUA Header</td><td class="ml-col"><code>AMDGPUNextUseAnalysis.h</code> (445 lines)</td><td class="gfx-col"><code>AMDGPUNextUseAnalysis.h</code> (87 lines)</td></tr>
+    <tr><td>NUA Implementation</td><td class="ml-col"><code>AMDGPUNextUseAnalysis.cpp</code> (~650 lines)</td><td class="gfx-col"><code>AMDGPUNextUseAnalysis.cpp</code> (1399 lines)</td></tr>
+    <tr><td>SSA Spiller</td><td class="ml-col" colspan="2"><code>AMDGPUSSARegisterSpiller.cpp/h</code></td></tr>
+    <tr><td>Design Docs</td><td class="ml-col"><code>ssa-spiller-docs/04-Design/</code> (6 docs)</td><td class="gfx-col">None</td></tr>
+    <tr><td>Paper</td><td colspan="2">Braun and Hack, "Register Spilling and Live-Range Splitting for SSA-Form Programs", CC'09</td></tr>
+  </table>
+</section>
+
+</div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+mermaid.initialize({ startOnLoad: false, theme: 'default', flowchart: { htmlLabels: false, padding: 20 } });
+
+// All diagram code stored as JS strings — safe from Reveal.js DOM processing
+var diagrams = {
+m1: 'flowchart TD\n\
+    Input["Non-SSA Machine IR\\npost-PHI elimination\\nmultiple defs per VReg"]\n\
+    Rebuilder["SSA Rebuilder -- TEMPORARY\\nReconstructs SSA destroyed by PHI Elimination\\nInserts PHIs at IDF, rewrites uses"]\n\
+    NUA["Next Use Analysis\\ncomputed here, consumed below"]\n\
+    Spiller["Early SSA Spiller\\nBelady MIN spill selection\\nLane-aware subregister spilling\\nPer-instruction and per-block queries"]\n\
+    RA["SSA Register Allocator\\nSSA Destruction\\nNon-SSA MIR"]\n\
+    Input --> Rebuilder\n\
+    Rebuilder -->|SSA-form MIR| NUA\n\
+    NUA --> Spiller\n\
+    Spiller --> RA\n\
+    style Input fill:#fff3cd,stroke:#ffc107\n\
+    style Rebuilder fill:#fff3cd,stroke:#ffc107,stroke-dasharray: 5 5\n\
+    style NUA fill:#bbdefb,stroke:#1565C0,stroke-width:3px\n\
+    style Spiller fill:#bbdefb,stroke:#1565C0,stroke-width:3px\n\
+    style RA fill:#e2e3e5,stroke:#6c757d',
+
+m2: 'flowchart LR\n\
+    subgraph DM["DenseMap VReg to SortedRecords"]\n\
+        direction TB\n\
+        V0[VReg 0]\n\
+        V1[VReg 1]\n\
+        VD[...]\n\
+        VN[VReg N]\n\
+    end\n\
+    subgraph SR["SortedRecords\\nsorted by NUD ascending"]\n\
+        direction TB\n\
+        R1["LaneBitmask, NUD"]\n\
+        R2["LaneBitmask, NUD"]\n\
+        R3["LaneBitmask, NUD"]\n\
+    end\n\
+    V0 --> SR\n\
+    style DM fill:#e3f2fd,stroke:#1565C0,stroke-width:2px\n\
+    style SR fill:#c8e6c9,stroke:#2E7D32,stroke-width:2px',
+
+m3: 'flowchart TD\n\
+    MBB["MBB\\nmerge = MIN 2, 5 = 2"]\n\
+    S1["Succ 1\\nuse x at dist 2"]\n\
+    S2["Succ 2\\nuse x at dist 5"]\n\
+    MBB -->|edge| S1\n\
+    MBB -->|edge| S2\n\
+    style MBB fill:#e3f2fd,stroke:#1565C0,stroke-width:3px\n\
+    style S1 fill:#c8e6c9,stroke:#2E7D32,stroke-width:2px\n\
+    style S2 fill:#fff3cd,stroke:#ffc107,stroke-width:2px',
+
+m4: 'flowchart TD\n\
+    Q["Query: %v 0:3\\nlanes 0-1-2-3\\nfull register"]\n\
+    U["Use: %v 0:1\\nlanes 0-1 only\\nat dist 3"]\n\
+    R["Result: NUD = 3\\nsubreg use covers\\nthe full-reg query"]\n\
+    Q -.->|"0-1 subset of 0-3\\nexisting covers new"| U\n\
+    U --> R\n\
+    style Q fill:#e3f2fd,stroke:#1565C0,stroke-width:2px\n\
+    style U fill:#c8e6c9,stroke:#2E7D32,stroke-width:2px\n\
+    style R fill:#f5f5f5,stroke:#888',
+
+m5: 'flowchart TD\n\
+    Q["Query: %v.sub0\\nlane 0 only"]\n\
+    U["Use: %v 0:3\\nlanes 0-1-2-3\\nat dist 5"]\n\
+    R["Result: NUD = 5\\nfull-reg use satisfies\\nsubreg query"]\n\
+    Q -.->|"lane 0 subset of 0-3\\nuse covers query"| U\n\
+    U --> R\n\
+    style Q fill:#e3f2fd,stroke:#1565C0,stroke-width:2px\n\
+    style U fill:#c8e6c9,stroke:#2E7D32,stroke-width:2px\n\
+    style R fill:#f5f5f5,stroke:#888',
+
+m6: 'flowchart TD\n\
+    Q["Query: %v.sub0\\nlane 0 only"]\n\
+    U["Use: %v.sub2\\nlane 2 only\\nat dist 3"]\n\
+    R["Result: no match\\ndifferent lanes\\nboth records coexist"]\n\
+    Q -.->|"lane 0 AND lane 2 = empty\\nno coverage"| U\n\
+    U --> R\n\
+    style Q fill:#e3f2fd,stroke:#1565C0,stroke-width:2px\n\
+    style U fill:#ffebee,stroke:#C62828,stroke-width:2px\n\
+    style R fill:#f5f5f5,stroke:#888',
+
+m7: 'flowchart LR\n\
+    subgraph MBB["Current Block - 5 instrs"]\n\
+        direction TB\n\
+        T["Offset=5 top = EntryOff"]\n\
+        I1[instr 1]\n\
+        QP["QUERY POINT Offset=3"]\n\
+        I3[instr 3]\n\
+        B["Offset=0 bottom"]\n\
+    end\n\
+    subgraph Succ["Successor - 3 instrs"]\n\
+        direction TB\n\
+        ST["Offset=3 top"]\n\
+        S1[instr 5]\n\
+        Use["USE %x Stored = -1"]\n\
+        SB["Offset=0 bottom"]\n\
+    end\n\
+    T --> I1 --> QP --> I3 --> B\n\
+    ST --> S1 --> Use --> SB\n\
+    B -->|CFG edge| ST\n\
+    style QP fill:#bbdefb,stroke:#1565C0,stroke-width:2px\n\
+    style Use fill:#c8e6c9,stroke:#2E7D32,stroke-width:2px',
+
+m8: 'flowchart LR\n\
+    subgraph PH["Preheader MBB"]\n\
+        Q[query point\\ndistance = preheader len]\n\
+    end\n\
+    subgraph LH["Loop Header Succ\\nEntryOff=5"]\n\
+        T[truncated to 0\\nmodels: reload here]\n\
+    end\n\
+    subgraph LB["Loop Body"]\n\
+        U[use %x\\nignored from outside]\n\
+    end\n\
+    Q -->|entry edge| T\n\
+    T --> U\n\
+    style PH fill:#e3f2fd,stroke:#1565C0\n\
+    style LH fill:#fff3cd,stroke:#ffc107\n\
+    style LB fill:#ffebee,stroke:#C62828,stroke-dasharray: 5 5',
+
+m9: 'flowchart TD\n\
+    A["analyze\\nO D*B*I*V one-time"]\n\
+    Q1["Query 1 -- O R"]\n\
+    Q2["Query 2 -- O R"]\n\
+    QN["Query N -- O R"]\n\
+    TOT["Total: O D*B*I*V + O N*R"]\n\
+    A --> Q1\n\
+    A --> Q2\n\
+    A --> QN\n\
+    Q1 ~~~ TOT\n\
+    style A fill:#bbdefb,stroke:#1565C0,stroke-width:2px\n\
+    style TOT fill:#c8e6c9,stroke:#2E7D32,stroke-width:2px',
+
+m10: 'flowchart TD\n\
+    Q1["Query 1"]\n\
+    Q2["Query 2"]\n\
+    QN["Query N"]\n\
+    P["Per query:\\ngetUses O U +\\ncalcDistanceToUse\\nO E log B"]\n\
+    TOT["Total: O N * U * E * log B"]\n\
+    Q1 --> P\n\
+    Q2 --> P\n\
+    QN --> P\n\
+    P ~~~ TOT\n\
+    style Q1 fill:#ffcdd2,stroke:#C62828\n\
+    style Q2 fill:#ffcdd2,stroke:#C62828\n\
+    style QN fill:#ffcdd2,stroke:#C62828\n\
+    style P fill:#ffcdd2,stroke:#C62828,stroke-width:2px\n\
+    style TOT fill:#ffcdd2,stroke:#C62828,stroke-width:2px',
+
+m11: 'flowchart LR\n\
+    GQ["getNextUse\\nDistance"]\n\
+    GSP["getShortest\\nPath"]\n\
+    CSP["Dijkstra\\nO V log V"]\n\
+    MPI["pathInfoFor\\nper edge"]\n\
+    BFS["calcIs\\nReachable\\nBFS O V+E"]\n\
+    GQ --> GSP -->|miss| CSP --> MPI --> BFS\n\
+    style GQ fill:#ffcdd2,stroke:#C62828\n\
+    style CSP fill:#ffcdd2,stroke:#C62828,stroke-width:2px\n\
+    style BFS fill:#ff8a80,stroke:#b71c1c,stroke-width:3px\n\
+    style MPI fill:#ffcdd2,stroke:#C62828'
+};
+
+// Render all diagrams via mermaid.render() then initialize Reveal.js
+(async function() {
+  for (var id in diagrams) {
+    var el = document.getElementById(id);
+    if (!el) continue;
+    try {
+      var result = await mermaid.render('svg-' + id, diagrams[id]);
+      el.innerHTML = result.svg;
+    } catch(err) {
+      el.innerHTML = '<p style="color:red;font-size:0.7em;">Diagram error: ' + err + '</p>';
+      console.error('Mermaid ' + id + ':', err);
+    }
+  }
+  Reveal.initialize({
+    hash: true,
+    slideNumber: true,
+    width: 1200,
+    height: 800,
+    margin: 0.04,
+    plugins: [ RevealHighlight ],
+    transition: 'slide',
+  });
+})();
+</script>
+<script>
+// Benchmark visualization charts
+(function() {
+  var data = [
+    {name:'nested-loops-side-exits-b', size:688, subregs:70,   ratio:1.58},
+    {name:'spill-vreg-many-lanes',     size:308, subregs:2204, ratio:1.06},
+    {name:'test1_ssa',                 size:196, subregs:1102, ratio:1.05},
+    {name:'loop_nested_3_outer_loops', size:192, subregs:116,  ratio:1.11},
+    {name:'if_else_loops_2_outer',     size:196, subregs:106,  ratio:1.23},
+    {name:'3_loops_seq_in_outer',      size:160, subregs:52,   ratio:1.10},
+    {name:'nested-loops-side-exits-a', size:120, subregs:28,   ratio:1.16},
+    {name:'complex-single-loop-b',     size:84,  subregs:62,   ratio:1.08},
+    {name:'inner_cfg_2_nested_loops',  size:68,  subregs:44,   ratio:1.06},
+    {name:'complex-ctrl-flow-14blk',   size:56,  subregs:6,    ratio:1.10},
+    {name:'triple-nested-loops',       size:56,  subregs:20,   ratio:1.04},
+    {name:'complex-ctrl-flow-11blk',   size:48,  subregs:28,   ratio:1.06},
+    {name:'complex-single-loop-a',     size:52,  subregs:12,   ratio:1.04},
+    {name:'complex-single-loop',       size:32,  subregs:28,   ratio:1.08},
+    {name:'multi_exit_loop',           size:44,  subregs:12,   ratio:1.07},
+    {name:'sequence_2_loops',          size:44,  subregs:40,   ratio:1.07},
+    {name:'test0_ssa',                 size:28,  subregs:43,   ratio:1.03},
+    {name:'linear-block-distances',    size:28,  subregs:12,   ratio:1.04},
+    {name:'3-tier-ranking-nested',     size:12,  subregs:0,    ratio:1.16},
+    {name:'simple-loop-3blocks',       size:16,  subregs:0,    ratio:1.07}
+  ];
+
+  function linReg(xs, ys) {
+    var n = xs.length, sx = 0, sy = 0, sxy = 0, sxx = 0;
+    for (var i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxy += xs[i]*ys[i]; sxx += xs[i]*xs[i]; }
+    var m = (n*sxy - sx*sy) / (n*sxx - sx*sx);
+    var b = (sy - m*sx) / n;
+    return {m: m, b: b};
+  }
+
+  function drawChart(canvasId, xKey, xLabel, xMax) {
+    var c = document.getElementById(canvasId);
+    if (!c) return;
+    var ctx = c.getContext('2d');
+    var W = c.width, H = c.height;
+    var pad = {top: 20, right: 20, bottom: 40, left: 55};
+    var pw = W - pad.left - pad.right;
+    var ph = H - pad.top - pad.bottom;
+    var yMin = 1.0, yMax = 1.65;
+
+    ctx.fillStyle = '#fafafa';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = '#e0e0e0';
+    ctx.lineWidth = 1;
+    for (var y = 1.0; y <= 1.65; y += 0.1) {
+      var py = pad.top + ph - (y - yMin) / (yMax - yMin) * ph;
+      ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(W - pad.right, py); ctx.stroke();
+    }
+
+    var baseY = pad.top + ph - (1.0 - yMin) / (yMax - yMin) * ph;
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(pad.left, baseY); ctx.lineTo(W - pad.right, baseY); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, pad.top);
+    ctx.lineTo(pad.left, H - pad.bottom);
+    ctx.lineTo(W - pad.right, H - pad.bottom);
+    ctx.stroke();
+
+    ctx.fillStyle = '#555';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (var y = 1.0; y <= 1.65; y += 0.1) {
+      var py = pad.top + ph - (y - yMin) / (yMax - yMin) * ph;
+      ctx.fillText(y.toFixed(1) + '\u00d7', pad.left - 6, py);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    var xTicks = [];
+    if (xMax <= 800) {
+      xTicks = [0, 100, 200, 300, 400, 500, 600, 700];
+    } else {
+      for (var t = 0; t <= xMax; t += Math.ceil(xMax / 6 / 100) * 100) xTicks.push(t);
+    }
+    for (var i = 0; i < xTicks.length; i++) {
+      var px = pad.left + xTicks[i] / xMax * pw;
+      ctx.fillText(xTicks[i], px, H - pad.bottom + 6);
+      ctx.strokeStyle = '#e8e8e8'; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(px, pad.top); ctx.lineTo(px, H - pad.bottom); ctx.stroke();
+    }
+
+    ctx.fillStyle = '#333';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(xLabel, pad.left + pw / 2, H - 4);
+
+    ctx.save();
+    ctx.translate(12, pad.top + ph / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('Performance Ratio (B/A)', 0, 0);
+    ctx.restore();
+
+    var xs = [], ys = [];
+    for (var i = 0; i < data.length; i++) {
+      var d = data[i];
+      var xv = d[xKey];
+      var px = pad.left + xv / xMax * pw;
+      var py = pad.top + ph - (d.ratio - yMin) / (yMax - yMin) * ph;
+      xs.push(xv); ys.push(d.ratio);
+
+      if (d.subregs === 0) ctx.fillStyle = '#78909C';
+      else if (d.subregs < 50) ctx.fillStyle = '#FF8F00';
+      else if (d.subregs < 200) ctx.fillStyle = '#1565C0';
+      else ctx.fillStyle = '#C62828';
+
+      ctx.beginPath();
+      ctx.arc(px, py, 5, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+
+    var reg = linReg(xs, ys);
+    var x0 = 0, x1 = xMax;
+    var y0 = reg.b, y1 = reg.m * x1 + reg.b;
+    var px0 = pad.left + x0 / xMax * pw;
+    var py0 = pad.top + ph - (y0 - yMin) / (yMax - yMin) * ph;
+    var px1 = pad.left + x1 / xMax * pw;
+    var py1 = pad.top + ph - (y1 - yMin) / (yMax - yMin) * ph;
+
+    py0 = Math.max(pad.top, Math.min(H - pad.bottom, py0));
+    py1 = Math.max(pad.top, Math.min(H - pad.bottom, py1));
+
+    ctx.strokeStyle = '#1565C0';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(px0, py0); ctx.lineTo(px1, py1); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = '#1565C0';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    var slope = reg.m > 0 ? '+' : '';
+    ctx.fillText('trend: ' + slope + (reg.m * (xMax > 1000 ? 1000 : 100)).toFixed(3) + (xMax > 1000 ? '/1K ops' : '/100KB'), px0 + 8, py0 - 8);
+
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    var lx = W - pad.right - 120, ly = pad.top + 8;
+    var cats = [
+      {c:'#78909C', l:'0 subregs'},
+      {c:'#FF8F00', l:'1\u201349'},
+      {c:'#1565C0', l:'50\u2013199'},
+      {c:'#C62828', l:'\u2265200'}
+    ];
+    for (var i = 0; i < cats.length; i++) {
+      ctx.fillStyle = cats[i].c;
+      ctx.beginPath(); ctx.arc(lx, ly + i * 14, 4, 0, 2*Math.PI); ctx.fill();
+      ctx.fillStyle = '#555';
+      ctx.fillText(cats[i].l, lx + 8, ly + i * 14 + 3);
+    }
+  }
+
+  setTimeout(function() {
+    drawChart('chart-size', 'size', 'Input Size (KB)', 750);
+    drawChart('chart-subreg', 'subregs', 'Subreg Operand Count', 2400);
+  }, 500);
+
+  if (typeof Reveal !== 'undefined') {
+    Reveal.on('slidechanged', function() {
+      drawChart('chart-size', 'size', 'Input Size (KB)', 750);
+      drawChart('chart-subreg', 'subregs', 'Subreg Operand Count', 2400);
+    });
+  }
+})();
+</script>
+<script>
+// Dev auto-reload: when tab regains focus, reload to pick up file changes.
+// Preserves current slide position via hash.
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden) {
+    var hash = window.location.hash;
+    window.location.href = window.location.pathname + '?t=' + Date.now() + hash;
+  }
+});
+</script>
+</body>
+</html>
