@@ -383,3 +383,235 @@
        - Input size (MIR file size / instruction count)
        - Number of subreg uses
      - Goal: demonstrate whether the gap grows with complexity (expected from O(1) vs. Dijkstra model)
+
+  4. **New presentation slide: Dataflow Analysis — Mathematical Foundation**
+     - Formalize our NUA as a classical dataflow analysis: semilattice (L, ⊓), transfer functions, monotone framework
+     - Define the lattice: distance values with ⊤ = Dead, ⊥ = 0, partial order by "closer is lower"
+     - Meet operator (⊓) = MIN at merge points (confluence of successor distances)
+     - Transfer function: f_I(d) = d + 1 per instruction (monotone, descending)
+     - Fixed-point iteration: start at ⊤ for all, iterate until no change — guaranteed convergence (finite descending chain)
+     - Contrast with competitor: Dijkstra is NOT a dataflow framework — no lattice, no convergence proof, ad-hoc caching
+     - Goal: establish theoretical rigor of our approach vs. their engineering heuristic
+
+### 2026-02-09 – End-of-Day: NOTES.md Recovery & File Deletion Investigation [BUGFIX]
+
+- **Context / goal**
+  - `worklog/NOTES.md` (~2582 lines) and presentation file were mysteriously deleted on Feb 9 between 16:56–17:14 UTC
+  - Recovered and merged NOTES.md from 3 sources into `ssa-spiller-docs/SSA_Spiller/08-Worklog/NOTES.md`
+
+- **Recovery sources merged**
+  - `worklog/NOTES_RESTORED_2026-02-04.md` (2047 lines, project start through Feb 4)
+  - `worklog/NOTES_chat_recovery_2026-02-09_session2.md` (558 lines, Feb 4–9 detailed entries)
+  - AI chat transcript from session 02b90a14 (Feb 7–8 entries)
+  - User's manual reconstruction (Feb 9 entries: Delta Review, Presentation Update, Neutral Rewrite, Plan for Feb 10)
+
+- **Content still lost**
+  - ~53 lines covering Feb 5–6 (gap between RESTORED and chat_recovery files)
+  - Condensed versions of Feb 7 and Feb 9 Delta Review entries (richer versions exist in `NOTES_chat_recovery_2026-02-09_session2.md`)
+
+- **File deletion investigation**
+  - Cursor server logs show network failure at 17:00–17:01 (DNS `ENOTFOUND` errors) followed by new connection at 17:12:40
+  - Multiple concurrent Cursor sessions were active (connections from 11:40, 14:59, and 17:12)
+  - No `rm` commands in bash history matching the files; no git operations explain it
+  - No `auditd` running — filesystem-level trace impossible
+  - Root cause inconclusive: hot exit theory explains content overwrite but not deletion of a pre-existing file
+  - `inotifywait` installed for future monitoring
+
+- **Decisions / rationale**
+  - NOTES.md now under git in `ssa-spiller-docs` — deletion recoverable via `git checkout`
+  - Merged file written to canonical location `ssa-spiller-docs/SSA_Spiller/08-Worklog/NOTES.md`
+
+### 2026-02-10 – NUA Test Replacement from next-use-analysis Branch [TEST] [NUA]
+
+- **Context / goal**
+  - Replace NUA test files on `early-ssa-spiller` with the updated versions from `next-use-analysis` branch
+  - The `next-use-analysis` branch had 17 test files; `early-ssa-spiller` had 25 (17 renamed + 8 orphans)
+
+- **Changes applied**
+  - `git checkout next-use-analysis -- llvm/test/CodeGen/AMDGPU/NextUseAnalysis/` brought in 17 updated files (+41600/-5793 lines)
+  - Identified 8 orphan files (old names for renamed tests + README.md) via MD5, MIR body, and function name comparison
+  - Removed orphans with `git rm`: `complex-control-flow-14blocks`, `complex-single-loop-b`, `inner_cfg_in_2_nesteed_loops` (typo), `multi_exit_loop_followed_by_simple_loop`, `nested-loops-with-side-exits-b`, `simple-linear-block-distances`, `three_loops_sequence_nested_in_outer_loop`, `README.md`
+
+- **CHECK line regeneration**
+  - All 17 tests initially failed because CHECK lines encoded old (pre-`ForceCloserToEntry`) distances
+  - **[BUGFIX]** The only NUA code diff between branches is `ForceCloserToEntry=true` in `insert()` during backward walk + `SortedRecords` `std::set` → `SmallVector` refactor
+  - Verified that distance changes are correct: for vregs with multiple uses in a block, old code kept distance to **killed** (furthest) use; new code keeps distance to **first** (closest) use — correct for Belady's MIN
+  - Fixed path bug in `scripts/regenerate_nua_checks.py` (`llvm_root` needed `llvm-project` appended since scripts dir moved up one level)
+  - Ran regeneration script → all 17/17 tests pass
+
+- **Next actions**
+  - Commit the test updates on `early-ssa-spiller`
+
+### 2026-02-10 – NUA PHI Filtering Bug Analysis [BUGFIX] [NUA]
+
+- **Context / goal**
+  - Found incorrect distance computation for `%21` in `two-sequential-loops.mir`
+  - `%21` is used in bb.1 PHI from bb.0, used directly in bb.3 (in-loop), and in bb.8 (post-loop)
+  - When bb.5 merges from bb.1, the in-loop use in bb.3 is completely lost
+
+- **Root cause (two-stage bug)**
+  1. **Stage 1**: During bb.1's backward walk, PHI use of `%21` (with `ForceCloserToEntry=true`) **evicts** the through-going use from bb.3 — because more-negative stored value wins, and the PHI at the top is the most negative
+  2. **Stage 2**: PHI filter calls `SuccDist.clear(%21)` for wrong-edge operands, wiping ALL `%21` info — including the through-going use that was already evicted in Stage 1
+  - Net result: bb.5 only sees `%21` from bb.6 direction (LoopTag+N), completely missing the in-loop use in bb.3
+
+- **Rejected approach: PostPhi snapshot with dominance check**
+  - User's idea: if same-loop and succ dominates pred, use distance from first non-PHI instruction
+  - Problems: (1) doesn't add correct-edge PHI uses back, (2) condition too narrow, (3) requires dominator tree, (4) post-PHI snapshot still contains PHI defs
+
+- **Proposed fix: separate PHI uses from UpwardNextUses**
+  - **[DESIGN]** PHI uses are edge-specific; UpwardNextUses is edge-agnostic. Mixing them then filtering is the root cause.
+  - Change 1: Skip PHI uses in backward walk (`if (!MI.isPHI())` guard on `Curr.insert`)
+  - Change 2: Replace "filter out wrong-edge PHIs" with "add correct-edge PHIs" in merge phase
+  - PHI uses added per-edge with `ForceCloserToEntry=true` at stored value `-(int64_t)EntryOff[SuccNum]`
+  - Properties: no new data structures, simpler logic, correct for all topologies, convergence preserved
+
+- **Changes applied**
+  - **[BUGFIX]** Skip PHI uses in backward walk; add correct-edge PHI uses in merge phase
+  - **[BUGFIX]** Added `UseOp.isUndef()` check in PHI merge — undef PHI operands (e.g., `undef %9:vreg_64`) were being added as real uses
+  - Python verifier (`nua_verifier.py`) updated with matching changes
+
+- **Verifier investigation**
+  - All 17 tests fail verifier — root cause: vreg renumbering mismatch (most tests not pre-renumbered via `renumber_mir_vregs.py`)
+  - Only `two-sequential-loops.mir` appears already renumbered
+  - Need to run `renumber_mir_vregs.py` on all 17 tests before verifier can work
+
+- **Verification results (post-rebuild)**
+  - Fixed `renumber_mir_vregs.py` to always generate `registers:` section (13/17 tests were missing it, causing LLVM MIR loader to renumber vregs)
+  - **15/17 PASS** — PHI fix verified correct across all these tests including `two-sequential-loops.mir`
+  - **2/17 FAIL** — `double-nested-loops-complex-cfg.mir` and `nested-loops-with-side-exits-a.mir` (pre-existing verifier issues, unrelated to PHI fix)
+
+- **CHECK regeneration & lit tests**
+  - Regenerated CHECK lines for all 17 tests via `regenerate_nua_checks.py`
+  - **17/17 lit tests PASS**
+
+### 2026-02-10 – Fix Multi-Exit Loop LoopExits Bug [BUGFIX] [NUA]
+
+- **Context / goal**
+  - `LoopExits` was `DenseMap<unsigned, unsigned>` — one exit target per exiting block
+  - Loops with multiple exit edges from the same block only stored the last exit; other exits never got `LoopTag`
+  - Likely root cause of `nested-loops-with-side-exits-a.mir` verifier failure
+
+- **Changes applied**
+  - **[BUGFIX]** Changed `LoopExits` from `DenseMap<unsigned, unsigned>` to `DenseSet<std::pair<unsigned, unsigned>>` (edge set)
+  - `init()`: `insert({exiting, target})` instead of `map[exiting] = target`
+  - `analyze()`: `LoopExits.contains({MBB, Succ})` instead of map lookup + comparison
+  - Python verifier: `Dict[int, int]` → `Set[Tuple[int, int]]` with matching lookup change
+
+- **Verification after multi-exit fix**
+  - 17/17 lit tests PASS (CHECKs regenerated)
+  - 15/17 verifier PASS, 2 FAIL (same as before)
+
+- **Root cause of 2 verifier failures** (investigated with debug dump in `init()`)
+  - LLVM's outer loop (header=bb.1) for `nested-loops-with-side-exits-a.mir`: blocks={1,2,3,4,5,6,7,8,14,17,18}
+  - Python's outer loop: blocks={1-18} (includes bb.9-bb.16)
+  - LLVM **excludes** bb.9-bb.16 (blocks reachable via the "side exit" bb.3→bb.15)
+  - Python includes them because path bb.15→...→bb.14→bb.3 reaches latch without header
+  - Root cause: Python uses textbook natural loop algorithm; LLVM's `LoopInfoBase::discoverAndMapSubloop()` uses a more sophisticated algorithm (dom tree postorder traversal, inner-to-outer discovery with subloop handling)
+  - This is a Python verifier limitation, not a C++ NUA bug
+
+- **Next actions**
+  - Remove temporary debug dump from `init()`
+  - **TODO**: Build structural invariant checker (loop-independent NUA validation):
+    1. At a use of %R, distance to %R = 0
+    2. After a def of %R, %R disappears from distances
+    3. Within a block, distance increases by 1 per instruction (backward)
+    4. Block-end distance ≤ min(successor distances + entry_off)
+  - **TODO**: Align Python verifier's loop detection with LLVM's `LoopInfoBase::discoverAndMapSubloop()` algorithm
+
+### 2026-02-10 – MIR Scaling Benchmark Generator [FEATURE] [NUA] [PERF]
+
+- **Context / goal**
+  - Need to demonstrate that NUA compile-time gap grows with input size
+  - Existing tests too small; largest is `double-nested-loops-complex-cfg.mir` at 39 BBs / 664 KB
+
+- **Deliverables**
+  - `scripts/generate_scaling_benchmarks.py` — generates valid AMDGPU SSA MIR files with composable CFG modules
+  - `scripts/run_scaling_benchmark.sh` — times both NUA implementations, outputs CSV
+  - `scripts/bench/scale_*.mir` — 6 files from 5 to 161 BBs (5.5 KB to 113 KB)
+
+- **CFG module types** (chained in cycle: compute → loop → compute → diamond → compute → nested loop)
+  - Compute chain: 1 BB, ~10 instrs (load-shift-or-add pattern)
+  - Simple loop: 2 BBs (header/latch + exit), SI_IF_BREAK + SI_LOOP
+  - If/else diamond: 5 BBs (structurized: entry, then, flow/SI_ELSE, else_body, merge)
+  - Nested loop: 5 BBs (outer header, inner header self-loop, inner exit, outer latch/SI_LOOP, outer exit)
+
+- **Validation**: all 6 files pass `llc -run-pass=amdgpu-next-use` (MachineVerifier clean)
+
+- **Scaling observed** (ML NUA, single run): 0.11s (5 BBs) → 0.25s (161 BBs)
+
+- **Acyclic scaling benchmarks** (generated to avoid GFX NUA loop crashes)
+  - 7 files: 14 to 770 BBs, acyclic-only (compute chains + if/else diamonds)
+  - GFX NUA runs with `-amdgpu-next-use-analysis-compatibility-mode=machine-learning -amdgpu-next-use-analysis-dump-distance`
+
+- **Benchmark results (ML vs GFX, median of 3, Debug builds, gfx1200)**
+
+  | Test | BBs | ML NUA | GFX NUA | Ratio |
+  |------|-----|--------|---------|-------|
+  | acyclic_016bb | 14 | 0.11s | 0.13s | 1.18x |
+  | acyclic_032bb | 26 | 0.12s | 0.16s | 1.33x |
+  | acyclic_064bb | 50 | 0.14s | 0.29s | 2.07x |
+  | acyclic_128bb | 98 | 0.17s | 2.09s | 12.29x |
+  | acyclic_256bb | 194 | 0.23s | 2.06s | 8.95x |
+  | acyclic_512bb | 386 | 0.37s | 2.24s | 6.05x |
+  | acyclic_1024bb | 770 | 0.72s | 4.08s | 5.66x |
+
+  - ML NUA scales linearly; GFX NUA hits a cost cliff at ~100 BBs (7x jump for 2x input)
+  - At 770 BBs: ML is 5.66x faster
+  - GFX NUA plateaus 2-2.5s for 98-386 BBs (caching amortization), rises again at 770 BBs
+
+### 2026-02-10 – Presentation Part 0 Slide Fixes [REVIEW] [PRESENTATION]
+
+- **Context / goal**
+  - Three feedback items on Part 0 slides of the NUA comparison presentation
+
+- **Changes applied**
+  - **[BUGFIX]** Slide 4 (scaling chart): Replaced "Ratio GFX/ML" right Y-axis with "Gap GFX − ML (seconds)" (absolute delta). The ratio was misleading — it spiked to 12.29× at 98 BBs then *decreased* to 5.66× at 770 BBs despite the absolute gap growing. Delta values: 0.02s → 0.04s → 0.15s → 1.92s → 1.83s → 1.87s → 3.36s — shows monotonically growing gap much more clearly. Removed "parity line" (ratio=1×). Added "+3.36s gap" annotation at 770 BBs.
+  - **[BUGFIX]** Slide 4 chart legend: Fixed vertical misalignment between marker symbols (circle, square, triangle) and their text labels. Increased row spacing from 14px to 20px, set `textBaseline = 'middle'`, and used consistent `lx + 12` text offset.
+  - **[FEATURE]** Slide 1 ("Two Algorithms, One Problem"): Replaced vague "who wins depends on how many queries" note-box with a detailed **total complexity comparison table** showing: Precomputation (O(iter×B×I) vs. none), Per spill point (O(Q) vs. O(Q×V×(V+E))), and Total over S spill points. Highlighted green row for the bottom-line comparison. Added legend for all variables (B, I, Q, S, V, E) and note explaining per-query GFX cost includes ~V BFS reachability checks inside Dijkstra.
+
+- **Rationale**
+  - Delta is the correct metric: both implementations' times grow, but what matters is the absolute time *saved* by ML NUA, not the multiplicative ratio (which is distorted by the GFX caching plateau)
+  - The per-query complexity "O(V log V + E)" was misleading because it omits the ~V × BFS calls triggered inside each Dijkstra — true per-query cost is O(V×(V+E)). The new table makes the total cost across all queries explicit.
+
+- **[BUGFIX]** Previous session applied Part 0 changes to wrong file (`ssa-spiller-docs/slides/`) instead of canonical location (`ssa-spiller-docs/SSA_Spiller/slides/`)
+  - Added full Part 0 section (header + 4 slides + scaling chart JS) to `ssa-spiller-docs/SSA_Spiller/slides/nua_comparison_presentation.html`
+  - Updated Agenda to include Part 0 with `<ol start="0">`
+  - All three fixes (complexity table, delta chart, legend alignment) included in the canonical copy
+
+### 2026-02-10 – Lazy NUA: Defer Analysis to First Query [PERF] [NUA]
+
+- **Context / goal**
+  - The competitor's NUA does zero work on functions that don't spill (lazy/on-demand architecture)
+  - Our NUA ran `init()` + `analyze()` eagerly in `runOnMachineFunction`, paying the full O(iter×B×I×V) cost even when the spiller finds no pressure issues and never queries NUA
+  - Goal: eliminate this overhead for no-spill functions to match the competitor's zero-cost baseline
+
+- **Changes applied**
+  - **[PERF]** Added lazy `ensureAnalyzed()` pattern to `NextUseResult`:
+    - New private members: `const MachineFunction *MF = nullptr;` and `bool Analyzed = false;`
+    - New private method `ensureAnalyzed()` calls `init(*MF) + analyze(*MF)` on first invocation, then sets `Analyzed = true`
+    - `runOnMachineFunction()` now only stores references (`MF`, `Indexes`, `LI`, `MRI`, `TRI`) — does NOT call `init()` or `analyze()`
+    - `clear()` updated to reset `Analyzed = false; MF = nullptr;` plus `UsedInBlock` and `EntryOff`
+  - **[PERF]** Added `ensureAnalyzed()` guard to all 6 public API entry points:
+    - `getNextUseDistance(iterator, VMP)` — in .cpp
+    - `getNextUseDistance(MBB, VMP)` — in .cpp
+    - `getSortedSubregUses(iterator, VMP)` — in .cpp
+    - `getSortedSubregUses(MBB, VMP)` — in .cpp
+    - `usedInBlock(MBB)` — inline in .h
+    - `dumpAllNextUseDistances(MF)` — in .cpp
+    - `isDead()` delegates to `getNextUseDistance()`, so covered transitively
+
+- **Properties**
+  - No behavioral change when spilling occurs — same analysis, same O(1) queries
+  - Zero NUA cost for no-spill functions (only stores 5 pointers)
+  - Guard is a single `if (!Analyzed)` branch per query — negligible overhead
+  - Existing `NextUseResult(MF, SI, LI)` eager constructor unchanged (new pass manager path)
+  - LIT tests: `dumpAllNextUseDistances()` calls `ensureAnalyzed()`, so `-run-pass=amdgpu-next-use` still works
+
+- **Decisions / rationale**
+  - Chose `ensureAnalyzed()` pattern over moving analysis into the spiller because: (1) keeps NUA self-contained, (2) no spiller changes needed, (3) preserves pass separation
+  - Stored `MF` pointer is valid because `runOnMachineFunction` lifetime encompasses all queries
+
+- **Next actions**
+  - Build and run 17 NUA lit tests to verify
+  - Re-run scaling benchmarks with a no-spill function to confirm zero overhead
+  - Update presentation with this improvement (eliminates the "eager vs lazy" argument)

@@ -75,13 +75,177 @@
 <!-- AGENDA -->
 <section>
   <h2>Agenda</h2>
-  <ol>
+  <ol start="0">
+    <li><strong>Part 0:</strong> <strong>Performance at a Glance</strong> &mdash; Algorithm comparison, scaling benchmarks, and the key insight</li>
     <li><strong>Part 1:</strong> <span class="ml">ML NUA Design</span> &mdash; Architecture, algorithms, data structures</li>
     <li><strong>Part 2:</strong> <span class="gfx">Graphics NUA Design</span> &mdash; Architecture and source code analysis</li>
     <li><strong>Part 3:</strong> <strong>Architectural Trade-offs and Integration Assessment</strong> &mdash; Spiller API coverage and design comparison</li>
     <li><strong>Part 4:</strong> <strong>Analysis &amp; Final Decision</strong> &mdash; Independent analysis, updated benchmarks, technical decision</li>
   </ol>
   <p style="margin-top: 30px; font-size: 0.8em;"><strong>Key Question:</strong> How do the two NUA designs compare, and which implementation is technically stronger?</p>
+</section>
+
+<!-- ===== PART 0: PERFORMANCE AT A GLANCE ===== -->
+
+<!-- PART 0 HEADER -->
+<section data-background-color="#F3E5F5">
+  <h1 style="text-align:center;">Part 0</h1>
+  <h2 style="text-align:center; color: var(--neutral-color);">Performance at a Glance</h2>
+  <p style="text-align:center;">Algorithm comparison, scaling benchmarks, and the key insight</p>
+</section>
+
+<!-- SLIDE 1: Algorithm Side-by-Side -->
+<section>
+  <h2>Two Algorithms, One Problem</h2>
+  <div class="two-col" style="gap:20px;">
+    <div style="border:2px solid var(--ml-color); border-radius:8px; padding:14px; background:#E3F2FD;">
+      <h3 class="ml" style="margin:0 0 8px;">ML NUA &mdash; Eager Dataflow</h3>
+      <ul style="font-size:0.78em; margin:0;">
+        <li><strong>Classical backward dataflow</strong> (fixed-point iteration)</li>
+        <li>One upfront pass: O(iter &times; blocks &times; instrs)</li>
+        <li><strong>Pre-computed snapshot</strong> at every instruction</li>
+        <li>Query: <strong>O(1)</strong> lookup into snapshot map</li>
+        <li>Integer arithmetic (<code>int64_t</code>), loop-aware tags</li>
+        <li>2 pass dependencies (SlotIndexes, LoopInfo)</li>
+      </ul>
+    </div>
+    <div style="border:2px solid var(--gfx-color); border-radius:8px; padding:14px; background:#FFF3E0;">
+      <h3 class="gfx" style="margin:0 0 8px;">Graphics NUA &mdash; Lazy On-Demand</h3>
+      <ul style="font-size:0.78em; margin:0;">
+        <li><strong>On-demand Dijkstra + BFS</strong> per query</li>
+        <li>No upfront cost; computation deferred to query time</li>
+        <li>Per-query: <strong>O(V log V + E)</strong> Dijkstra + BFS</li>
+        <li>7-level call hierarchy per distance request</li>
+        <li>Floating-point (<code>double</code>), 1000<sup>depth</sup> loop encoding</li>
+        <li>5 pass dependencies (+LiveVars, LiveIntervals, DomTree)</li>
+      </ul>
+    </div>
+  </div>
+  <div style="margin-top:10px; border:2px solid #37474F; border-radius:8px; padding:10px 14px; background:#FAFAFA;">
+    <table style="width:100%; font-size:0.72em; border-collapse:collapse;">
+      <tr style="background:#ECEFF1;">
+        <th style="padding:4px 8px; text-align:left;">Total complexity</th>
+        <th style="padding:4px 8px; background:#E3F2FD; color:#1565C0;">ML NUA</th>
+        <th style="padding:4px 8px; background:#FFF3E0; color:#C62828;">Graphics NUA</th>
+      </tr>
+      <tr>
+        <td style="padding:4px 8px;">Precomputation</td>
+        <td style="padding:4px 8px; background:#E3F2FD;"><strong>O(iter &times; B &times; I)</strong> &mdash; one pass</td>
+        <td style="padding:4px 8px; background:#FFF3E0;">None (deferred to query time)</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 8px;">Per spill point (Q live regs)</td>
+        <td style="padding:4px 8px; background:#E3F2FD;"><strong>O(Q)</strong></td>
+        <td style="padding:4px 8px; background:#FFF3E0;"><strong>O(Q &times; V &times; (V+E))</strong></td>
+      </tr>
+      <tr style="background:#E8F5E9; font-weight:bold;">
+        <td style="padding:4px 8px;">Total over S spill points</td>
+        <td style="padding:4px 8px;">O(iter&middot;B&middot;I) + S&middot;O(Q)</td>
+        <td style="padding:4px 8px;">S &middot; O(Q&middot;V&middot;(V+E))</td>
+      </tr>
+    </table>
+    <div style="font-size:0.62em; color:#666; margin-top:4px;">
+      B = basic blocks, I = instructions/block, Q = live registers (64&ndash;256 on AMDGPU), S = spill points, V = BBs in CFG, E = CFG edges.
+      Per-query GFX cost: Dijkstra O(V log V) triggers ~V &times; BFS O(V+E) reachability checks.
+    </div>
+  </div>
+</section>
+
+<!-- SLIDE 2: Why On-Demand Loses at Spill Points -->
+<section>
+  <h2>Why On-Demand Loses at Spill Points</h2>
+  <div style="background:#E3F2FD; border-left:4px solid var(--ml-color); padding:8px 12px; font-size:0.82em; margin-bottom:12px;">
+    <strong>At every spill point,</strong> the spiller queries distances for <strong>every live register</strong> to pick the best candidate (Belady&rsquo;s MIN).
+  </div>
+  <div style="display:flex; gap:16px; align-items:center; justify-content:center; margin:16px 0;">
+    <div style="border:3px solid var(--ml-color); border-radius:10px; padding:16px 24px; text-align:center; background:#E3F2FD; min-width:220px;">
+      <div style="font-size:0.7em; color:var(--ml-color); font-weight:bold;">ML NUA</div>
+      <div style="font-size:1.6em; font-weight:bold; color:var(--ml-color);">128 &ndash; 512</div>
+      <div style="font-size:0.7em;">operations per spill decision</div>
+      <div style="font-size:0.65em; color:#666;">64&ndash;256 regs &times; O(1) lookup</div>
+    </div>
+    <div style="font-size:2em; color:var(--neutral-color);">&laquo;</div>
+    <div style="border:3px solid var(--gfx-color); border-radius:10px; padding:16px 24px; text-align:center; background:#FFF3E0; min-width:220px;">
+      <div style="font-size:0.7em; color:var(--gfx-color); font-weight:bold;">Graphics NUA</div>
+      <div style="font-size:1.6em; font-weight:bold; color:var(--gfx-color);">1M &ndash; 1.75M</div>
+      <div style="font-size:0.7em;">operations per spill decision</div>
+      <div style="font-size:0.65em; color:#666;">64&ndash;256 regs &times; Dijkstra+BFS</div>
+    </div>
+  </div>
+  <div style="text-align:center; font-size:1.1em; font-weight:bold; color:var(--good); margin:8px 0;">~3,000&times; fewer operations per spill decision</div>
+  <table class="comparison-table" style="font-size:0.65em; margin-top:10px;">
+    <tr><th>Scenario</th><th>Live Regs</th><th class="ml-col">ML NUA Cost</th><th class="gfx-col">Graphics NUA Cost</th></tr>
+    <tr><td><strong>4 waves/EU</strong> (typical)</td><td>~64</td><td class="ml-col">64 &times; 2 = <strong>128 ops</strong></td><td class="gfx-col">~40 &times; 25K = <strong>~1M ops</strong></td></tr>
+    <tr><td><strong>1 wave/EU</strong> (max regs)</td><td>~256</td><td class="ml-col">256 &times; 2 = <strong>512 ops</strong></td><td class="gfx-col">~70 &times; 25K = <strong>~1.75M ops</strong></td></tr>
+    <tr><td><strong>Repeated spill points</strong></td><td>&mdash;</td><td class="ml-col">Still O(1) &mdash; already computed</td><td class="gfx-col">Cache helps same BB pairs; new points &rarr; new Dijkstra</td></tr>
+  </table>
+  <div style="text-align:center; font-size:0.75em; color:var(--neutral-color); margin-top:8px;">
+    The more registers live at a spill point, the larger ML NUA&rsquo;s advantage.
+  </div>
+</section>
+
+<!-- SLIDE 3: Benchmark Results Table -->
+<section>
+  <h2>Scaling Benchmark Results</h2>
+  <div style="background:#ECEFF1; border-radius:6px; padding:8px 12px; font-size:0.72em; margin-bottom:10px;">
+    <strong>Methodology:</strong> Debug builds, <code>gfx1200</code>, median of 3 runs.
+    GFX NUA forced to compute via <code>-dump-distance</code> flag.
+    ML NUA runs eagerly (no dump needed). Generated acyclic MIR tests with scaling BB/instruction counts.
+  </div>
+  <table class="comparison-table" style="font-size:0.68em;">
+    <tr>
+      <th>Test</th><th>BBs</th><th>Instrs</th>
+      <th class="ml-col">ML NUA</th><th class="gfx-col">GFX NUA</th><th>Ratio (GFX/ML)</th>
+    </tr>
+    <tr>
+      <td>acyclic_016bb</td><td>14</td><td>60</td>
+      <td class="ml-col">0.11s</td><td class="gfx-col">0.13s</td>
+      <td style="background:#E8F5E9; font-weight:bold;">1.18&times;</td>
+    </tr>
+    <tr>
+      <td>acyclic_032bb</td><td>26</td><td>102</td>
+      <td class="ml-col">0.12s</td><td class="gfx-col">0.16s</td>
+      <td style="background:#E8F5E9; font-weight:bold;">1.33&times;</td>
+    </tr>
+    <tr>
+      <td>acyclic_064bb</td><td>50</td><td>186</td>
+      <td class="ml-col">0.14s</td><td class="gfx-col">0.29s</td>
+      <td style="background:#FFF3E0; font-weight:bold;">2.07&times;</td>
+    </tr>
+    <tr>
+      <td>acyclic_128bb</td><td>98</td><td>354</td>
+      <td class="ml-col">0.17s</td><td class="gfx-col">2.09s</td>
+      <td style="background:#FFEBEE; font-weight:bold; color:var(--bad);">12.29&times;</td>
+    </tr>
+    <tr>
+      <td>acyclic_256bb</td><td>194</td><td>690</td>
+      <td class="ml-col">0.23s</td><td class="gfx-col">2.06s</td>
+      <td style="background:#FFEBEE; font-weight:bold; color:var(--bad);">8.95&times;</td>
+    </tr>
+    <tr>
+      <td>acyclic_512bb</td><td>386</td><td>1362</td>
+      <td class="ml-col">0.37s</td><td class="gfx-col">2.24s</td>
+      <td style="background:#FFEBEE; font-weight:bold; color:var(--bad);">6.05&times;</td>
+    </tr>
+    <tr>
+      <td>acyclic_1024bb</td><td>770</td><td>2706</td>
+      <td class="ml-col">0.72s</td><td class="gfx-col">4.08s</td>
+      <td style="background:#FFEBEE; font-weight:bold; color:var(--bad);">5.66&times;</td>
+    </tr>
+  </table>
+  <div class="slide-note" style="margin-top:8px;">
+    9/20 tests with loops crash Graphics NUA (not shown). ML NUA: <strong>0 crashes</strong> across all tests.
+  </div>
+</section>
+
+<!-- SLIDE 4: Scaling Plot -->
+<section>
+  <h2>Compile-Time Scaling: ML NUA vs. Graphics NUA</h2>
+  <canvas id="chart-scaling" width="960" height="440" style="background:#fafafa; border:1px solid #ddd; border-radius:4px; display:block; margin:0 auto;"></canvas>
+  <div class="slide-note">
+    X-axis: number of basic blocks (14&ndash;770). Left Y-axis: wall-clock seconds. Right Y-axis: absolute gap GFX&minus;ML (seconds).
+    ML NUA scales linearly; Graphics NUA hits a cost cliff at ~100 BBs. The gap grows with input size.
+  </div>
 </section>
 
 <!-- PART 1 HEADER -->
@@ -1497,6 +1661,183 @@ m11: 'flowchart LR\n\
       drawChart('chart-size', 'size', 'Input Size (KB)', 750);
       drawChart('chart-subreg', 'subregs', 'Subreg Operand Count', 2400);
     });
+  }
+})();
+</script>
+<script>
+// ===== Part 0: Scaling Chart =====
+(function() {
+  var scalingData = [
+    {bbs: 14, instrs: 60, ml: 0.11, gfx: 0.13, delta: 0.02},
+    {bbs: 26, instrs: 102, ml: 0.12, gfx: 0.16, delta: 0.04},
+    {bbs: 50, instrs: 186, ml: 0.14, gfx: 0.29, delta: 0.15},
+    {bbs: 98, instrs: 354, ml: 0.17, gfx: 2.09, delta: 1.92},
+    {bbs: 194, instrs: 690, ml: 0.23, gfx: 2.06, delta: 1.83},
+    {bbs: 386, instrs: 1362, ml: 0.37, gfx: 2.24, delta: 1.87},
+    {bbs: 770, instrs: 2706, ml: 0.72, gfx: 4.08, delta: 3.36}
+  ];
+
+  function drawScalingChart() {
+    var c = document.getElementById('chart-scaling');
+    if (!c) return;
+    var ctx = c.getContext('2d');
+    var W = c.width, H = c.height;
+    var pad = {top: 24, right: 70, bottom: 48, left: 60};
+    var pw = W - pad.left - pad.right;
+    var ph = H - pad.top - pad.bottom;
+
+    var xMax = 800, yMaxL = 4.5, yMaxR = 4.0;
+
+    // Background
+    ctx.fillStyle = '#fafafa';
+    ctx.fillRect(0, 0, W, H);
+
+    // Grid lines (left Y-axis: seconds)
+    ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+    for (var y = 0; y <= yMaxL; y += 0.5) {
+      var py = pad.top + ph - (y / yMaxL) * ph;
+      ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(W - pad.right, py); ctx.stroke();
+    }
+
+    // Axes
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, H - pad.bottom);
+    ctx.lineTo(W - pad.right, H - pad.bottom); ctx.lineTo(W - pad.right, pad.top);
+    ctx.stroke();
+
+    // Left Y-axis labels (seconds)
+    ctx.fillStyle = '#555'; ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (var y = 0; y <= yMaxL; y += 1.0) {
+      var py = pad.top + ph - (y / yMaxL) * ph;
+      ctx.fillText(y.toFixed(1) + 's', pad.left - 6, py);
+    }
+
+    // Right Y-axis labels (delta in seconds)
+    ctx.textAlign = 'left';
+    for (var d = 0; d <= yMaxR; d += 1.0) {
+      var py = pad.top + ph - (d / yMaxR) * ph;
+      ctx.fillStyle = '#2E7D32'; ctx.fillText(d.toFixed(1) + 's', W - pad.right + 6, py);
+    }
+
+    // X-axis labels
+    ctx.fillStyle = '#555'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    var xTicks = [0, 100, 200, 300, 400, 500, 600, 700, 800];
+    for (var i = 0; i < xTicks.length; i++) {
+      var px = pad.left + (xTicks[i] / xMax) * pw;
+      ctx.fillText(xTicks[i], px, H - pad.bottom + 6);
+    }
+
+    // Axis titles
+    ctx.fillStyle = '#333'; ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Number of Basic Blocks', pad.left + pw / 2, H - 4);
+
+    ctx.save();
+    ctx.translate(14, pad.top + ph / 2); ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = '#555'; ctx.fillText('Time (seconds)', 0, 0);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(W - 6, pad.top + ph / 2); ctx.rotate(Math.PI / 2);
+    ctx.fillStyle = '#2E7D32'; ctx.fillText('Gap GFX \u2212 ML (seconds)', 0, 0);
+    ctx.restore();
+
+    // Helper: map data to pixel coords
+    function xPx(bbs) { return pad.left + (bbs / xMax) * pw; }
+    function yPxL(sec) { return pad.top + ph - (sec / yMaxL) * ph; }
+    function yPxR(delta) { return pad.top + ph - (delta / yMaxR) * ph; }
+
+    // --- ML NUA line (blue solid, circles) ---
+    ctx.strokeStyle = '#1565C0'; ctx.lineWidth = 2.5; ctx.setLineDash([]);
+    ctx.beginPath();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxL(scalingData[i].ml);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxL(scalingData[i].ml);
+      ctx.fillStyle = '#1565C0';
+      ctx.beginPath(); ctx.arc(px, py, 5, 0, 2 * Math.PI); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+
+    // --- GFX NUA line (red solid, squares) ---
+    ctx.strokeStyle = '#C62828'; ctx.lineWidth = 2.5; ctx.setLineDash([]);
+    ctx.beginPath();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxL(scalingData[i].gfx);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxL(scalingData[i].gfx);
+      ctx.fillStyle = '#C62828';
+      ctx.fillRect(px - 5, py - 5, 10, 10);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(px - 5, py - 5, 10, 10);
+    }
+
+    // --- Delta line (green dashed, triangles, right Y-axis) ---
+    ctx.strokeStyle = '#2E7D32'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxR(scalingData[i].delta);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxR(scalingData[i].delta);
+      ctx.fillStyle = '#2E7D32';
+      ctx.beginPath();
+      ctx.moveTo(px, py - 6); ctx.lineTo(px - 5, py + 4); ctx.lineTo(px + 5, py + 4);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+    }
+
+    // Annotation: cost cliff at 98 BBs
+    var cliffPx = xPx(98), cliffPy = yPxL(2.09);
+    ctx.fillStyle = '#C62828'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('Cost cliff: 7\u00d7 jump', cliffPx + 10, cliffPy - 8);
+    ctx.fillText('for 2\u00d7 input', cliffPx + 10, cliffPy + 6);
+
+    // Annotation: gap at 770 BBs
+    var gapPx = xPx(770), gapPy = yPxR(3.36);
+    ctx.fillStyle = '#2E7D32'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'right';
+    ctx.fillText('+3.36s gap', gapPx - 10, gapPy - 6);
+
+    // Legend (fixed alignment, 20px row spacing)
+    var lx = pad.left + 16, ly = pad.top + 12;
+    ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle';
+
+    // ML
+    ctx.fillStyle = '#1565C0';
+    ctx.beginPath(); ctx.arc(lx, ly, 4, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = '#333'; ctx.textAlign = 'left';
+    ctx.fillText('ML NUA time (left axis)', lx + 12, ly);
+
+    // GFX
+    ly += 20;
+    ctx.fillStyle = '#C62828';
+    ctx.fillRect(lx - 4, ly - 4, 8, 8);
+    ctx.fillStyle = '#333';
+    ctx.fillText('Graphics NUA time (left axis)', lx + 12, ly);
+
+    // Delta
+    ly += 20;
+    ctx.fillStyle = '#2E7D32';
+    ctx.beginPath();
+    ctx.moveTo(lx, ly - 5); ctx.lineTo(lx - 4, ly + 3); ctx.lineTo(lx + 4, ly + 3);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#333';
+    ctx.fillText('Gap GFX \u2212 ML (right axis)', lx + 12, ly);
+  }
+
+  setTimeout(drawScalingChart, 600);
+  if (typeof Reveal !== 'undefined') {
+    Reveal.on('slidechanged', drawScalingChart);
   }
 })();
 </script>
