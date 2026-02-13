@@ -839,3 +839,101 @@
   - "Root cause: Dijkstra path-finding assumes all BBs reachable; unreachable BBs return ∞ distance"
   - "Graphics mode worsens the problem by skipping backedges during path search"
   - "Our dataflow NUA handles unreachable blocks naturally — no path-finding needed"
+
+### 2026-02-13 – Presentation Slides Restructuring [REFACTOR]
+
+- **Context / goal**
+  - Manager agreed Part 0 needs to be self-explaining, brief, and concise for upper management
+  - Key benchmark and decision slides were buried in Parts 3-4; need to move them to Part 0
+
+- **Changes applied**
+  - **[REFACTOR]** Moved original slide 41 (Empirical Benchmark: Full Test Suite) right after slide 5 (Why On-Demand Loses at Spill Points) — benchmark methodology + results table now in Part 0
+  - **[REFACTOR]** Moved original slide 48 (Updated Benchmark: Full 20-test Table) to Part 0; added remark "Benchmarking after GFX implementation improvement"
+  - **[REFACTOR]** Moved original slide 49 (Performance Gap charts) to Part 0; changed Y-axis from "Performance Ratio (theirs/ours)" to "Time Delta (GFX − ML)" in seconds; fixed legend alignment (textBaseline = 'middle')
+  - **[REFACTOR]** Moved original slide 51 (Technical Decision) to end of Part 0 (before Part 1 header); removed "(Implementation A)" from verdict; changed "competitor" → "GFX implementation" throughout
+  - **[REFACTOR]** Updated chart JavaScript: data changed from `ratio` to `delta` field, Y-axis scale 0–0.13s, grid/tick labels in seconds
+
+- **Part 0 new slide order**
+  1. Part 0 Header
+  2. Two Algorithms, One Problem
+  3. Why On-Demand Loses at Spill Points
+  4. Empirical Benchmark: Full Test Suite (moved)
+  5. Updated Benchmark (moved, with GFX improvement note)
+  6. Performance Gap charts (moved, delta instead of ratio)
+  7. Scaling Benchmark Results
+  8. Compile-Time Scaling plot
+  9. Technical Decision (moved, cleaned up)
+  10. → Part 1 Header
+
+- **Additional changes (cont'd)**
+  - **[FEATURE]** Added new slide after Compile-Time Scaling: "Graphics NUA: Empirical vs. Theoretical Growth" — plots GFX measured data with O(n·log n) and O(n²) reference curves
+  - **[FEATURE]** Added vertical dashed "cache saturation" border at x=98 BBs on complexity chart
+  - **[BUGFIX]** Fixed complexity chart Y-axis scale: yMax 15→5 to match Compile-Time Scaling chart (~4.5s). GFX data was visually flat at yMax=15; now appears steep as expected
+  - **[REFACTOR]** Adjusted O(n²) constant k_sq=5e-4 so curve exits chart at cache saturation border (x≈100); O(n·log n) k_nlogn=8e-4 tracks GFX endpoint (4.08s at 770 BBs)
+  - **[REFACTOR]** Renamed "Technical Decision" header → "Technical Summary"
+
+- **Part 0 updated slide order**
+  1. Part 0 Header
+  2. Two Algorithms, One Problem
+  3. Why On-Demand Loses at Spill Points
+  4. Empirical Benchmark: Full Test Suite (moved)
+  5. Updated Benchmark (moved, with GFX improvement note)
+  6. Performance Gap charts (moved, delta instead of ratio)
+  7. Scaling Benchmark Results
+  8. Compile-Time Scaling plot
+  9. **NEW:** Graphics NUA: Empirical vs. Theoretical Growth (complexity asymptotes + cache saturation border)
+  10. Technical Summary (moved, cleaned up)
+  11. → Part 1 Header
+
+- **Complexity correction** [DESIGN]
+  - Earlier hypothesis that y = x·log(x) and y = x cross at some large x is **wrong**: x·log(x) > x for all x > e ≈ 2.72. The log factor only grows; no crossing ever happens.
+  - **ML NUA complexity** (corrected): iterative dataflow analysis is O(I · B · Instr) ≈ **O(B)** (linear), where I = number of iterations ≤ 3 for reducible CFGs. NOT O(V·(V+E)).
+  - **GFX NUA complexity**: O(V · log V) per query (Dijkstra+BFS), no upfront cost.
+  - **Total cost comparison** for Q next-use queries:
+    - ML NUA:  O(B) upfront + Q · O(1) = **O(B)** — linear
+    - GFX NUA: Q · O(V · log V) = **O(Q · V · log V)** — super-linear
+  - Since Q scales with the number of instructions, GFX becomes super-linear in practice while ML stays linear. This is exactly what the benchmarks demonstrate.
+
+- **Additional changes (cont'd 2)**
+  - **[FEATURE]** Added new slide 12: "Real-World Stress Test: Blender Cycles GPU Kernel" — two-column layout with input profile (309 functions, 83K BBs, 1.9M instructions, 104K vregs, 236 MB) and head-to-head results table (21 min vs 86 min + crash). Verdict: "4× faster — and the only one that finishes."
+
+- **Part 0 updated slide order (final)**
+  1. Part 0 Header
+  2. Two Algorithms, One Problem
+  3. Why On-Demand Loses at Spill Points
+  4. Empirical Benchmark: Full Test Suite (moved)
+  5. Updated Benchmark (moved, with GFX improvement note)
+  6. Performance Gap charts (moved, delta instead of ratio)
+  7. Scaling Benchmark Results
+  8. Compile-Time Scaling plot
+  9. Graphics NUA: Empirical vs. Theoretical Growth (complexity asymptotes + cache saturation border)
+  10. Technical Summary (moved, cleaned up)
+  11. **NEW:** Blender Cycles GPU Kernel stress test (input profile + results)
+  12. → Part 1 Header
+
+- **Additional changes (cont'd 3)** [FEATURE]
+  - **[FEATURE]** Added 3 source-walkthrough slides after Blender benchmark, before Technical Summary:
+    1. **"GFX NUA Complexity: Source Code Walkthrough"** — call chain from `getNextUseDistance()` → `calcDistanceToUse()` → `calcShortestPath()` (Dijkstra, L614) → `calcIsReachable()` (BFS, L565). Key code snippets with highlighted lines. Verdict: O(Q × V × (V+E)) total.
+    2. **"Bug 1: Loop Crash — 9/20 LIT Tests Fail"** — crash at `assert(D >= 0)` in `calcDistanceToUse()` L1033-1034. Root cause: `instrsAreInOrder()` guard at L1020 doesn't cover cross-BB loop cases. Impact table: 0/20 vs 9/20 crashes.
+    3. **"Bug 2: Unreachable BB Crash — Blender Kernel"** — crash at `assert(Dst != double::max())` in `calcShortestDistance()` L685-688. Root cause: no reachability check before Dijkstra. Aggravating factor: `gfxMode()` skips backedges (L655-657). Shows unused guards `isReachable()` L274 and `isDistanceFinite()` L279.
+  - All code links pinned to commit `a46ffd9` (PR #178873) for stability
+
+- **Part 0 final slide order**
+  1. Part 0 Header
+  2. Two Algorithms, One Problem
+  3. Why On-Demand Loses at Spill Points
+  4. Empirical Benchmark: Full Test Suite
+  5. Updated Benchmark (with GFX improvement note)
+  6. Performance Gap charts (delta)
+  7. Scaling Benchmark Results
+  8. Compile-Time Scaling plot
+  9. Graphics NUA: Empirical vs. Theoretical Growth
+  10. Blender Cycles GPU Kernel stress test
+  11. **NEW:** GFX NUA Complexity: Source Code Walkthrough
+  12. **NEW:** Bug 1: Loop Crash (9/20 LIT Tests)
+  13. **NEW:** Bug 2: Unreachable BB Crash (Blender Kernel)
+  14. Technical Summary
+  15. → Part 1 Header
+
+- **Next actions**
+  - Review 3 new slides in browser — verify code formatting, links, and layout

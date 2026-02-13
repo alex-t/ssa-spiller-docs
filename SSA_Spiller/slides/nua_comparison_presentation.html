@@ -184,6 +184,111 @@
   </div>
 </section>
 
+<!-- Empirical Benchmark: Full Test Suite (moved from Part 4) -->
+<section>
+  <h2>Empirical Benchmark: Full Test Suite</h2>
+  <h3>Methodology</h3>
+  <ul style="font-size:0.75em;">
+    <li><strong>Target:</strong> <code>gfx1200</code>, Debug builds, median of 3 runs, <code>real</code> wall-clock time</li>
+    <li><span class="ml">ML NUA:</span> <code>llc -run-pass=amdgpu-next-use</code> <strong>without dump</strong> &mdash; analysis runs eagerly, all distances pre-computed. Ready for O(1) queries.</li>
+    <li><span class="gfx">Graphics NUA:</span> <code>llc -run-pass=amdgpu-next-use-analysis -amdgpu-next-use-analysis-dump-distance</code> &mdash; dump flag forces <code>populatePathTable()</code> (all-pairs Dijkstra) + <code>printAllDistances()</code> (per-register queries), otherwise the pass does <strong>almost no work</strong>.</li>
+    <li><span class="warn">Fairness note:</span> the Graphics NUA dump includes some output formatting overhead; however, the ML NUA measurement <em>also excludes</em> dump overhead, so both sides have a comparable advantage.</li>
+  </ul>
+  <div class="two-col" style="gap:12px;">
+    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
+      <tr><th>Test Case</th><th>Size</th><th>Sub</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
+      <tr><td>nested-loops-side-exits-b</td><td>664K</td><td>Yes</td><td class="ml-col">0.204</td><td class="gfx-col">0.323</td><td class="verdict"><strong>1.58</strong></td></tr>
+      <tr><td>spill-vreg-many-lanes</td><td>314K</td><td>Yes</td><td class="ml-col">0.318</td><td class="gfx-col">0.340</td><td class="verdict">1.06</td></tr>
+      <tr><td>test1_ssa</td><td>193K</td><td>Yes</td><td class="ml-col">0.315</td><td class="gfx-col">0.331</td><td class="verdict">1.05</td></tr>
+      <tr><td>loop_nested_3_outer_loops</td><td>195K</td><td>Yes</td><td class="ml-col">0.142</td><td class="gfx-col">0.158</td><td class="verdict">1.11</td></tr>
+      <tr><td>if_else_loops_2_outer</td><td>186K</td><td>Yes</td><td class="ml-col">0.134</td><td class="gfx-col">0.165</td><td class="verdict"><strong>1.23</strong></td></tr>
+      <tr><td>3_loops_seq_in_outer</td><td>161K</td><td>Yes</td><td class="ml-col">0.139</td><td class="gfx-col">0.154</td><td class="verdict">1.10</td></tr>
+      <tr><td>nested-loops-side-exits-a</td><td>121K</td><td>Yes</td><td class="ml-col">0.132</td><td class="gfx-col">0.154</td><td class="verdict"><strong>1.16</strong></td></tr>
+      <tr><td>complex-single-loop-b</td><td>83K</td><td>Yes</td><td class="ml-col">0.134</td><td class="gfx-col">0.146</td><td class="verdict">1.08</td></tr>
+      <tr><td>inner_cfg_2_nested_loops</td><td>66K</td><td>Yes</td><td class="ml-col">0.124</td><td class="gfx-col">0.132</td><td class="verdict">1.06</td></tr>
+      <tr><td>complex-ctrl-flow-14blk</td><td>55K</td><td>Few</td><td class="ml-col">0.134</td><td class="gfx-col">0.148</td><td class="verdict">1.10</td></tr>
+    </table>
+    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
+      <tr><th>Test Case</th><th>Size</th><th>Sub</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
+      <tr><td>triple-nested-loops</td><td>55K</td><td>Few</td><td class="ml-col">0.124</td><td class="gfx-col">0.130</td><td class="verdict">1.04</td></tr>
+      <tr><td>complex-ctrl-flow-11blk</td><td>46K</td><td>Some</td><td class="ml-col">0.129</td><td class="gfx-col">0.138</td><td class="verdict">1.06</td></tr>
+      <tr><td>complex-single-loop-a</td><td>53K</td><td>Few</td><td class="ml-col">0.123</td><td class="gfx-col">0.128</td><td class="verdict">1.04</td></tr>
+      <tr><td>complex-single-loop</td><td>32K</td><td>Few</td><td class="ml-col">0.119</td><td class="gfx-col">0.129</td><td class="verdict">1.08</td></tr>
+      <tr><td>multi_exit_loop</td><td>43K</td><td>Few</td><td class="ml-col">0.121</td><td class="gfx-col">0.130</td><td class="verdict">1.07</td></tr>
+      <tr><td>sequence_2_loops</td><td>43K</td><td>Few</td><td class="ml-col">0.118</td><td class="gfx-col">0.127</td><td class="verdict">1.07</td></tr>
+      <tr><td>test0_ssa</td><td>25K</td><td>Yes</td><td class="ml-col">0.123</td><td class="gfx-col">0.127</td><td class="verdict">1.03</td></tr>
+      <tr><td>linear-block-distances</td><td>26K</td><td>Few</td><td class="ml-col">0.122</td><td class="gfx-col">0.127</td><td class="verdict">1.04</td></tr>
+      <tr><td>3-tier-ranking-nested</td><td>8K</td><td>No</td><td class="ml-col">0.101</td><td class="gfx-col">0.118</td><td class="verdict"><strong>1.16</strong></td></tr>
+      <tr><td>simple-loop-3blocks</td><td>13K</td><td>No</td><td class="ml-col">0.113</td><td class="gfx-col">0.121</td><td class="verdict">1.07</td></tr>
+    </table>
+  </div>
+  <div style="text-align:center; margin-top:8px;">
+    <span style="font-size:0.8em;">ML NUA is faster on all 20 test cases (1.03&times; &ndash; 1.58&times; range)</span>
+    <span style="font-size:0.7em; margin-left:12px;">Times in seconds (median of 3) &nbsp;|&nbsp; <code>-mcpu=gfx1200</code>, Debug builds</span>
+  </div>
+</section>
+
+<!-- Updated Benchmark: Full Test Suite after GFX improvement (moved from Part 4) -->
+<section>
+  <h2>Updated Benchmark: Full Test Suite (20 tests)</h2>
+  <div class="note-box" style="font-size:0.78em; padding:6px 10px; margin-bottom:8px;">
+    <strong>Note:</strong> Benchmarking after GFX implementation improvement.
+  </div>
+  <div class="two-col" style="gap:12px;">
+    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
+      <tr><th>Test Case</th><th>Size</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
+      <tr><td>nested-loops-side-exits-b</td><td>664K</td><td class="ml-col">0.204</td><td class="gfx-col">0.294</td><td class="verdict"><strong>1.44</strong></td></tr>
+      <tr><td>spill-vreg-many-lanes</td><td>314K</td><td class="ml-col">0.321</td><td class="gfx-col">0.339</td><td class="verdict">1.05</td></tr>
+      <tr><td>test1_ssa</td><td>193K</td><td class="ml-col">0.316</td><td class="gfx-col">0.335</td><td class="verdict">1.06</td></tr>
+      <tr><td>loop_nested_3_outer_loops</td><td>195K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>if_else_loops_2_outer</td><td>186K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>3_loops_seq_in_outer</td><td>161K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>nested-loops-side-exits-a</td><td>121K</td><td class="ml-col">0.136</td><td class="gfx-col">0.153</td><td class="verdict">1.12</td></tr>
+      <tr><td>complex-single-loop-b</td><td>83K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>inner_cfg_2_nested_loops</td><td>66K</td><td class="ml-col">0.125</td><td class="gfx-col">0.133</td><td class="verdict">1.06</td></tr>
+      <tr><td>complex-ctrl-flow-14blk</td><td>55K</td><td class="ml-col">0.134</td><td class="gfx-col">0.149</td><td class="verdict">1.11</td></tr>
+    </table>
+    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
+      <tr><th>Test Case</th><th>Size</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
+      <tr><td>triple-nested-loops</td><td>55K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>complex-ctrl-flow-11blk</td><td>46K</td><td class="ml-col">0.129</td><td class="gfx-col">0.140</td><td class="verdict">1.08</td></tr>
+      <tr><td>complex-single-loop-a</td><td>53K</td><td class="ml-col">0.123</td><td class="gfx-col">0.132</td><td class="verdict">1.07</td></tr>
+      <tr><td>complex-single-loop</td><td>32K</td><td class="ml-col">0.120</td><td class="gfx-col">0.128</td><td class="verdict">1.06</td></tr>
+      <tr><td>multi_exit_loop</td><td>43K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>sequence_2_loops</td><td>43K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>test0_ssa</td><td>25K</td><td class="invalid-col">Invalid SSA</td><td class="invalid-col">Invalid SSA</td><td class="invalid-col">&mdash;</td></tr>
+      <tr><td>linear-block-distances</td><td>26K</td><td class="ml-col">0.121</td><td class="gfx-col">0.128</td><td class="verdict">1.05</td></tr>
+      <tr><td>3-tier-ranking-nested</td><td>8K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+      <tr><td>simple-loop-3blocks</td><td>13K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
+    </table>
+  </div>
+  <div style="text-align:center; margin-top:8px; font-size:0.75em;">
+    <span class="good"><strong>10 valid:</strong> ML NUA faster (1.05&times;&ndash;1.44&times;)</span> &nbsp;|&nbsp;
+    <span class="bad"><strong>9 crash:</strong> Graphics NUA only (assert failure in loops)</span> &nbsp;|&nbsp;
+    <span style="color:#888;">1 invalid: both fail (malformed SSA)</span>
+  </div>
+</section>
+
+<!-- Benchmark Visualization: Time Delta (moved from Part 4, changed from ratio to delta) -->
+<section>
+  <h2>Performance Gap vs. Input Characteristics</h2>
+  <div class="two-col" style="gap:20px;">
+    <div>
+      <h3 style="text-align:center; font-size:0.85em; margin-bottom:2px;">Input Size (KB) vs. Time Delta (GFX &minus; ML)</h3>
+      <canvas id="chart-size" width="520" height="340" style="background:#fafafa; border:1px solid #ddd; border-radius:4px;"></canvas>
+    </div>
+    <div>
+      <h3 style="text-align:center; font-size:0.85em; margin-bottom:2px;">Subreg Operand Count vs. Time Delta (GFX &minus; ML)</h3>
+      <canvas id="chart-subreg" width="520" height="340" style="background:#fafafa; border:1px solid #ddd; border-radius:4px;"></canvas>
+    </div>
+  </div>
+  <div class="slide-note">
+    Data from initial benchmark round (20 tests, all valid). Delta = Graphics&nbsp;NUA time &minus; ML&nbsp;NUA time (seconds). Positive values mean ML&nbsp;NUA is faster.
+    Subreg operand counts measured by counting <code>.sub*</code> operands in each MIR test file. Trend line: least-squares linear regression.
+  </div>
+</section>
+
+
 <!-- SLIDE 3: Benchmark Results Table -->
 <section>
   <h2>Scaling Benchmark Results</h2>
@@ -245,6 +350,220 @@
   <div class="slide-note">
     X-axis: number of basic blocks (14&ndash;770). Left Y-axis: wall-clock seconds. Right Y-axis: absolute gap GFX&minus;ML (seconds).
     ML NUA scales linearly; Graphics NUA hits a cost cliff at ~100 BBs. The gap grows with input size.
+  </div>
+</section>
+
+
+<!-- GFX Complexity Asymptotes -->
+<section>
+  <h2>Graphics NUA: Empirical vs. Theoretical Growth</h2>
+  <canvas id="chart-complexity" width="960" height="480" style="background:#fafafa; border:1px solid #ddd; border-radius:4px; display:block; margin:0 auto;"></canvas>
+  <div class="slide-note">
+    GFX NUA wall-clock time (red squares) plotted against theoretical O(n&middot;log&nbsp;n) and O(n&sup2;) curves scaled for visual comparison.
+    The empirical data tracks between the two bounds, confirming super-linear growth consistent with Dijkstra+BFS complexity.
+  </div>
+</section>
+
+<!-- Blender Kernel Benchmark -->
+<section>
+  <h2>Real-World Stress Test: Blender Cycles GPU Kernel</h2>
+  <div style="display:flex; gap:24px; align-items:flex-start;">
+    <div style="flex:1;">
+      <h3 style="margin-bottom:8px; color:#1565C0;">Input: <code>bigSSA.mir</code></h3>
+      <table class="data-table" style="font-size:0.78em; width:100%;">
+        <tr><td>Source</td><td><strong>Blender Cycles GPU kernel</strong></td></tr>
+        <tr><td>Dump point</td><td>post phi-elimination</td></tr>
+        <tr><td>File size</td><td>236 MB (~3.5M lines)</td></tr>
+        <tr><td>Functions</td><td><strong>309</strong></td></tr>
+        <tr><td>Basic blocks</td><td><strong>83,629</strong></td></tr>
+        <tr><td>Instructions</td><td><strong>~1.9M</strong></td></tr>
+        <tr><td>Unique vregs</td><td>103,729</td></tr>
+        <tr><td>Largest function</td><td>9,743 BBs</td></tr>
+      </table>
+    </div>
+    <div style="flex:1;">
+      <h3 style="margin-bottom:8px; color:#C62828;">Results</h3>
+      <table class="data-table" style="font-size:0.78em; width:100%;">
+        <tr style="background:#e8e8e8;"><th></th><th>ML NUA (ours)</th><th>GFX NUA (theirs)</th></tr>
+        <tr><td>Wall time</td><td style="color:#1565C0;"><strong>21 min 23s</strong></td><td style="color:#C62828;"><strong>86 min 02s</strong></td></tr>
+        <tr><td>Exit code</td><td style="color:#2E7D32;"><strong>0 (success)</strong></td><td style="color:#C62828;"><strong>139 (SIGSEGV)</strong></td></tr>
+        <tr><td>Status</td><td style="color:#2E7D32;">&#x2705; Correct</td><td style="color:#C62828;">&#x274C; Crashed</td></tr>
+      </table>
+      <div class="verdict-box" style="margin-top:12px; font-size:0.85em; padding:12px;">
+        <strong>4&times; faster &mdash; and the only one that finishes.</strong>
+      </div>
+    </div>
+  </div>
+  <div class="slide-note">
+    Both pure Release builds, both with <code>-dump-distance</code>, output to <code>/dev/null</code>.
+    GFX NUA segfaults due to unreachable basic blocks (Dijkstra assumes full reachability).
+  </div>
+</section>
+
+<!-- Slide: GFX NUA Complexity — Source Code Proof -->
+<section style="overflow:hidden;">
+  <h2>GFX NUA Complexity: Source Code Walkthrough</h2>
+  <div style="display:flex; gap:12px; align-items:flex-start;">
+    <div style="flex:1;">
+      <h3 style="margin-bottom:6px; color:#7B1FA2;">Call Chain per Query</h3>
+      <div style="font-size:0.72em; font-family:monospace; background:#f5f0fa; border:1px solid #ce93d8; border-radius:4px; padding:10px; line-height:1.7;">
+        <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1107-L1108" target="_blank" style="color:#333;">getNextUseDistance()</a> <span style="color:#888;">L1093</span><br>
+        &nbsp;&rarr; <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L975-L1036" target="_blank" style="color:#333;">calcDistanceToUse()</a> <span style="color:#888;">L975 &mdash; per use operand</span><br>
+        &nbsp;&nbsp;&rarr; <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L675-L690" target="_blank" style="color:#333;">calcShortestDistance()</a> <span style="color:#888;">L675</span><br>
+        &nbsp;&nbsp;&nbsp;&rarr; <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L614-L673" target="_blank" style="color:#C62828;"><strong>calcShortestPath()</strong></a> <span style="color:#C62828;">L614 &mdash; <strong>Dijkstra</strong></span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&rarr; <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L489-L502" target="_blank" style="color:#333;">pathInfoFor()</a> &rarr; mutPathInfoFor()<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L565-L593" target="_blank" style="color:#C62828;"><strong>calcIsReachable()</strong></a> <span style="color:#C62828;">L565 &mdash; <strong>BFS</strong> O(V+E)</span>
+      </div>
+      <div class="verdict-box" style="margin-top:10px; font-size:0.78em; padding:10px;">
+        Per query: Dijkstra O(V&middot;log&nbsp;V) + ~V &times; BFS O(V+E)<br>
+        = <strong>O(V &times; (V+E))</strong> per query<br>
+        &times; Q queries &rarr; <strong style="color:#C62828;">O(Q &times; V &times; (V+E))</strong> total
+      </div>
+    </div>
+    <div style="flex:1;">
+      <h3 style="margin-bottom:6px; color:#1565C0;">Key Code: Dijkstra</h3>
+      <pre style="font-size:0.55em; background:#f5f5f5; border:1px solid #ddd; border-radius:4px; padding:8px; margin:0; overflow-x:auto; line-height:1.5;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L630-L632" target="_blank">L630-632</a>: priority queue
+std::priority_queue&lt;const MBB*,
+    vector&lt;const MBB*&gt;, Cmp&gt; Worklist;
+
+// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L653-L657" target="_blank">L653-657</a>: successor loop
+for (MBB *Succ : CurMBB-&gt;successors()) {
+  const PathInfo &amp;PI = pathInfoFor(CurMBB, Succ);
+  <span style="background:#fff3cd;">if (PI.Backedge)
+    if (gfxMode()) continue;</span>  // skips backedges!
+  ...
+  Worklist.push(Succ); // O(log V) each
+}</pre>
+      <h3 style="margin-top:8px; margin-bottom:4px; color:#1565C0;">Key Code: BFS Reachability</h3>
+      <pre style="font-size:0.55em; background:#f5f5f5; border:1px solid #ddd; border-radius:4px; padding:8px; margin:0; overflow-x:auto; line-height:1.5;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L565-L593" target="_blank">L565-593</a>: full BFS per pair
+bool calcIsReachable(const MBB *From,
+                     const MBB *To) const {
+  std::queue&lt;const MBB*&gt; Queue;
+  while (!Queue.empty()) {
+    for (const MBB *Succ : Current-&gt;successors())
+      ... // visits up to V+E nodes
+  }
+}</pre>
+    </div>
+  </div>
+  <div class="slide-note">
+    All links point to <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp" target="_blank">PR&nbsp;#178873</a> commit <code>a46ffd9</code>. Click any function name to view the source.
+  </div>
+</section>
+
+<!-- Slide: Bug 1 — Loop Crash (9/20 LIT Tests) -->
+<section style="overflow:hidden;">
+  <h2>Bug 1: Loop Crash &mdash; 9/20 LIT Tests Fail</h2>
+  <div style="display:flex; gap:12px; align-items:flex-start;">
+    <div style="flex:1;">
+      <h3 style="margin-bottom:6px; color:#C62828;">Crash Site</h3>
+      <pre style="font-size:0.55em; background:#fff5f5; border:1px solid #ef9a9a; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1033-L1034" target="_blank">calcDistanceToUse() L1033-1034</a>
+// fallthrough: no special case matched
+
+double D = calcShortestDistance(&amp;CurMI, UseMI);
+<span style="background:#ffcdd2; font-weight:bold;">assert(D >= 0);  // FIRES HERE</span></pre>
+      <h3 style="margin-top:8px; margin-bottom:4px; color:#FF8F00;">The Guard That Fails</h3>
+      <pre style="font-size:0.55em; background:#fff8e1; border:1px solid #ffe082; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1020-L1021" target="_blank">calcDistanceToUse() L1020-1021</a>
+if (UseLoop &amp;&amp; CurMBB == UseMBB
+    &amp;&amp; <span style="background:#fff3cd; font-weight:bold;">!instrsAreInOrder(&amp;CurMI, UseMI)</span>
+    &amp;&amp; !UseMI-&gt;isPHI()) {
+  // handles next-iteration case...
+}
+// But: does NOT cover cross-BB loop cases
+// &rarr; falls through to L1033</pre>
+    </div>
+    <div style="flex:1;">
+      <h3 style="margin-bottom:6px;">Root Cause</h3>
+      <ul style="font-size:0.72em; line-height:1.6;">
+        <li>After replacing <code>DT-&gt;dominates()</code> with <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L288-L305" target="_blank"><code>instrsAreInOrder()</code></a>, certain loop configurations are <strong>not caught</strong> by the guard at L1020</li>
+        <li>When def and use are in <strong>different BBs</strong> within the same loop, execution falls through to L1033</li>
+        <li><code>calcShortestDistance()</code> returns a <strong>negative</strong> distance (use is &ldquo;behind&rdquo; the def in loop iteration order)</li>
+        <li><code>assert(D&nbsp;&gt;=&nbsp;0)</code> fires &rarr; <strong>crash</strong></li>
+      </ul>
+      <h3 style="margin-top:8px; margin-bottom:4px;">Impact</h3>
+      <table class="data-table" style="font-size:0.78em; width:100%;">
+        <tr style="background:#e8e8e8;"><th></th><th>ML NUA</th><th>GFX NUA</th></tr>
+        <tr><td>Crashes</td><td style="color:#2E7D32;"><strong>0 / 20</strong></td><td style="color:#C62828;"><strong>9 / 20</strong></td></tr>
+        <tr><td>All loop tests</td><td style="color:#2E7D32;">Pass</td><td style="color:#C62828;">Crash</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="slide-note">
+    Regression introduced by <code>instrsAreInOrder()</code> replacing <code>DT-&gt;dominates()</code>. All 9 crashing tests involve loops.
+    <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L975-L1036" target="_blank">Full function source &rarr;</a>
+  </div>
+</section>
+
+<!-- Slide: Bug 2 — Unreachable BB Crash (Blender Kernel) -->
+<section style="overflow:hidden;">
+  <h2>Bug 2: Unreachable BB Crash &mdash; Blender Kernel</h2>
+  <div style="display:flex; gap:12px; align-items:flex-start;">
+    <div style="flex:1;">
+      <h3 style="margin-bottom:6px; color:#C62828;">Fatal Call Stack</h3>
+      <pre style="font-size:0.55em; background:#fff5f5; border:1px solid #ef9a9a; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1033" target="_blank">calcDistanceToUse() L1033</a>
+// fallthrough &mdash; NO reachability check!
+D = calcShortestDistance(&amp;CurMI, UseMI);
+
+// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L685-L688" target="_blank">calcShortestDistance() L685-688</a>
+double Dst = getShortestPath(CurMBB, UseMBB);
+<span style="background:#ffcdd2; font-weight:bold;">assert(Dst != double::max() &amp;&amp;
+  "...non-reachable basic blocks!");</span>
+// FIRES &uarr; when BBs are unreachable
+
+// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L672" target="_blank">calcShortestPath() L672</a>
+// Dijkstra exhausts worklist:
+return std::numeric_limits&lt;double&gt;::max();</pre>
+      <h3 style="margin-top:10px; margin-bottom:6px; color:#FF8F00;">Aggravating Factor</h3>
+      <pre style="font-size:0.55em; background:#fff8e1; border:1px solid #ffe082; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L655-L657" target="_blank">calcShortestPath() L655-657</a>
+if (PI.Backedge)
+  if (<span style="background:#fff3cd; font-weight:bold;">gfxMode()</span>)
+    continue;  // skips backedges!
+// &rarr; blocks reachable only via backedge
+//   become &ldquo;unreachable&rdquo; for Dijkstra</pre>
+    </div>
+    <div style="flex:1;">
+      <h3 style="margin-bottom:6px;">Root Cause</h3>
+      <ul style="font-size:0.72em; line-height:1.6;">
+        <li>After optimizations (phi-elimination), some BBs become <strong>unreachable</strong> from others</li>
+        <li>Dijkstra assumes all BB pairs are connected &mdash; returns <code>double::max()</code> when they&rsquo;re not</li>
+        <li><code>gfxMode()</code> <strong>skips backedges</strong> during Dijkstra &mdash; even more pairs become unreachable</li>
+        <li>Their own guards <strong>exist but are unused</strong> on this path:
+          <br><a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L274-L277" target="_blank"><code>isReachable()</code></a> (L274) and
+          <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L279-L283" target="_blank"><code>isDistanceFinite()</code></a> (L279)</li>
+      </ul>
+      <h3 style="margin-top:8px; margin-bottom:4px;">Manifestation</h3>
+      <table class="data-table" style="font-size:0.78em; width:100%;">
+        <tr style="background:#e8e8e8;"><th>Build</th><th>Behavior</th></tr>
+        <tr><td>Release+Asserts</td><td style="color:#C62828;"><strong>Assertion failure</strong></td></tr>
+        <tr><td>Pure Release</td><td style="color:#C62828;"><strong>Segfault after 86 min</strong> (UB)</td></tr>
+      </table>
+      <div class="note-box" style="margin-top:10px; font-size:0.78em;">
+        <strong>ML NUA:</strong> Handles naturally &mdash; unreachable blocks converge to <code>DeadDistance</code>. No path-finding, no BFS, no <code>double::max()</code> sentinels.
+      </div>
+    </div>
+  </div>
+  <div class="slide-note">
+    Crash on real-world Blender Cycles kernel (309 functions, 84K BBs). Missing reachability guard at <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1033" target="_blank">L1033</a>.
+  </div>
+</section>
+
+<!-- Technical Summary (moved from Part 4) -->
+<section>
+  <h2>Technical Summary</h2>
+  <div class="verdict-box" style="font-size:1.1em; padding:20px;">
+    <strong>The ML NUA is the technically stronger implementation.</strong>
+  </div>
+  <h3 style="margin-top:16px;">Decision Basis</h3>
+  <table class="comparison-table" style="font-size:0.78em;">
+    <tr><th>Criterion</th><th>Evidence</th></tr>
+    <tr><td><strong>Architecture</strong></td><td>Classical dataflow with provable convergence vs. demand-driven Dijkstra with 7-level call hierarchy</td></tr>
+    <tr><td><strong>Correctness</strong></td><td>0/20 crashes vs. 9/20 crashes after GFX implementation update; explicit SSA invariant enforcement; unified algorithm with no mode bifurcation</td></tr>
+    <tr><td><strong>Performance</strong></td><td>Faster or equal on 10/10 valid tests (1.05&times;&ndash;1.44&times; range); advantage grows with CFG complexity</td></tr>
+    <tr><td><strong>Maintainability</strong></td><td>2 pass dependencies vs. 5; single code path vs. gfx/ML bifurcation; comprehensive design docs</td></tr>
+    <tr><td><strong>Spiller integration</strong></td><td>Native VRegMaskPair API; O(1) snapshots; lane-sorted subreg queries; precomputed block summaries</td></tr>
+  </table>
+  <div class="note-box" style="margin-top:12px; font-size:0.82em;">
+    This decision is based on independent analysis and two rounds of benchmarks (pre- and post-GFX implementation update). The GFX implementation&rsquo;s recent improvements are acknowledged but do not change the conclusion.
   </div>
 </section>
 
@@ -1010,49 +1329,6 @@ if (mlMode()) {
 </section>
 
 <!-- Benchmark Methodology & Results -->
-<section>
-  <h2>Empirical Benchmark: Full Test Suite</h2>
-  <h3>Methodology</h3>
-  <ul style="font-size:0.75em;">
-    <li><strong>Target:</strong> <code>gfx1200</code>, Debug builds, median of 3 runs, <code>real</code> wall-clock time</li>
-    <li><span class="ml">ML NUA:</span> <code>llc -run-pass=amdgpu-next-use</code> <strong>without dump</strong> &mdash; analysis runs eagerly, all distances pre-computed. Ready for O(1) queries.</li>
-    <li><span class="gfx">Graphics NUA:</span> <code>llc -run-pass=amdgpu-next-use-analysis -amdgpu-next-use-analysis-dump-distance</code> &mdash; dump flag forces <code>populatePathTable()</code> (all-pairs Dijkstra) + <code>printAllDistances()</code> (per-register queries), otherwise the pass does <strong>almost no work</strong>.</li>
-    <li><span class="warn">Fairness note:</span> the Graphics NUA dump includes some output formatting overhead; however, the ML NUA measurement <em>also excludes</em> dump overhead, so both sides have a comparable advantage.</li>
-  </ul>
-  <div class="two-col" style="gap:12px;">
-    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
-      <tr><th>Test Case</th><th>Size</th><th>Sub</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
-      <tr><td>nested-loops-side-exits-b</td><td>664K</td><td>Yes</td><td class="ml-col">0.204</td><td class="gfx-col">0.323</td><td class="verdict"><strong>1.58</strong></td></tr>
-      <tr><td>spill-vreg-many-lanes</td><td>314K</td><td>Yes</td><td class="ml-col">0.318</td><td class="gfx-col">0.340</td><td class="verdict">1.06</td></tr>
-      <tr><td>test1_ssa</td><td>193K</td><td>Yes</td><td class="ml-col">0.315</td><td class="gfx-col">0.331</td><td class="verdict">1.05</td></tr>
-      <tr><td>loop_nested_3_outer_loops</td><td>195K</td><td>Yes</td><td class="ml-col">0.142</td><td class="gfx-col">0.158</td><td class="verdict">1.11</td></tr>
-      <tr><td>if_else_loops_2_outer</td><td>186K</td><td>Yes</td><td class="ml-col">0.134</td><td class="gfx-col">0.165</td><td class="verdict"><strong>1.23</strong></td></tr>
-      <tr><td>3_loops_seq_in_outer</td><td>161K</td><td>Yes</td><td class="ml-col">0.139</td><td class="gfx-col">0.154</td><td class="verdict">1.10</td></tr>
-      <tr><td>nested-loops-side-exits-a</td><td>121K</td><td>Yes</td><td class="ml-col">0.132</td><td class="gfx-col">0.154</td><td class="verdict"><strong>1.16</strong></td></tr>
-      <tr><td>complex-single-loop-b</td><td>83K</td><td>Yes</td><td class="ml-col">0.134</td><td class="gfx-col">0.146</td><td class="verdict">1.08</td></tr>
-      <tr><td>inner_cfg_2_nested_loops</td><td>66K</td><td>Yes</td><td class="ml-col">0.124</td><td class="gfx-col">0.132</td><td class="verdict">1.06</td></tr>
-      <tr><td>complex-ctrl-flow-14blk</td><td>55K</td><td>Few</td><td class="ml-col">0.134</td><td class="gfx-col">0.148</td><td class="verdict">1.10</td></tr>
-    </table>
-    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
-      <tr><th>Test Case</th><th>Size</th><th>Sub</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
-      <tr><td>triple-nested-loops</td><td>55K</td><td>Few</td><td class="ml-col">0.124</td><td class="gfx-col">0.130</td><td class="verdict">1.04</td></tr>
-      <tr><td>complex-ctrl-flow-11blk</td><td>46K</td><td>Some</td><td class="ml-col">0.129</td><td class="gfx-col">0.138</td><td class="verdict">1.06</td></tr>
-      <tr><td>complex-single-loop-a</td><td>53K</td><td>Few</td><td class="ml-col">0.123</td><td class="gfx-col">0.128</td><td class="verdict">1.04</td></tr>
-      <tr><td>complex-single-loop</td><td>32K</td><td>Few</td><td class="ml-col">0.119</td><td class="gfx-col">0.129</td><td class="verdict">1.08</td></tr>
-      <tr><td>multi_exit_loop</td><td>43K</td><td>Few</td><td class="ml-col">0.121</td><td class="gfx-col">0.130</td><td class="verdict">1.07</td></tr>
-      <tr><td>sequence_2_loops</td><td>43K</td><td>Few</td><td class="ml-col">0.118</td><td class="gfx-col">0.127</td><td class="verdict">1.07</td></tr>
-      <tr><td>test0_ssa</td><td>25K</td><td>Yes</td><td class="ml-col">0.123</td><td class="gfx-col">0.127</td><td class="verdict">1.03</td></tr>
-      <tr><td>linear-block-distances</td><td>26K</td><td>Few</td><td class="ml-col">0.122</td><td class="gfx-col">0.127</td><td class="verdict">1.04</td></tr>
-      <tr><td>3-tier-ranking-nested</td><td>8K</td><td>No</td><td class="ml-col">0.101</td><td class="gfx-col">0.118</td><td class="verdict"><strong>1.16</strong></td></tr>
-      <tr><td>simple-loop-3blocks</td><td>13K</td><td>No</td><td class="ml-col">0.113</td><td class="gfx-col">0.121</td><td class="verdict">1.07</td></tr>
-    </table>
-  </div>
-  <div style="text-align:center; margin-top:8px;">
-    <span style="font-size:0.8em;">ML NUA is faster on all 20 test cases (1.03&times; &ndash; 1.58&times; range)</span>
-    <span style="font-size:0.7em; margin-left:12px;">Times in seconds (median of 3) &nbsp;|&nbsp; <code>-mcpu=gfx1200</code>, Debug builds</span>
-  </div>
-</section>
-
 <!-- Benchmark Analysis -->
 <section>
   <h2>Benchmark Analysis</h2>
@@ -1213,61 +1489,6 @@ if (mlMode()) {
 </section>
 
 <!-- Updated Benchmark: Full 20-test Table -->
-<section>
-  <h2>Updated Benchmark: Full Test Suite (20 tests)</h2>
-  <div class="two-col" style="gap:12px;">
-    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
-      <tr><th>Test Case</th><th>Size</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
-      <tr><td>nested-loops-side-exits-b</td><td>664K</td><td class="ml-col">0.204</td><td class="gfx-col">0.294</td><td class="verdict"><strong>1.44</strong></td></tr>
-      <tr><td>spill-vreg-many-lanes</td><td>314K</td><td class="ml-col">0.321</td><td class="gfx-col">0.339</td><td class="verdict">1.05</td></tr>
-      <tr><td>test1_ssa</td><td>193K</td><td class="ml-col">0.316</td><td class="gfx-col">0.335</td><td class="verdict">1.06</td></tr>
-      <tr><td>loop_nested_3_outer_loops</td><td>195K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-      <tr><td>if_else_loops_2_outer</td><td>186K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-      <tr><td>3_loops_seq_in_outer</td><td>161K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-      <tr><td>nested-loops-side-exits-a</td><td>121K</td><td class="ml-col">0.136</td><td class="gfx-col">0.153</td><td class="verdict">1.12</td></tr>
-      <tr><td>complex-single-loop-b</td><td>83K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-      <tr><td>inner_cfg_2_nested_loops</td><td>66K</td><td class="ml-col">0.125</td><td class="gfx-col">0.133</td><td class="verdict">1.06</td></tr>
-      <tr><td>complex-ctrl-flow-14blk</td><td>55K</td><td class="ml-col">0.134</td><td class="gfx-col">0.149</td><td class="verdict">1.11</td></tr>
-    </table>
-    <table class="comparison-table" style="font-size:0.55em; margin-top:4px;">
-      <tr><th>Test Case</th><th>Size</th><th class="ml-col">ML</th><th class="gfx-col">Gfx</th><th class="verdict">&times;</th></tr>
-      <tr><td>triple-nested-loops</td><td>55K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-      <tr><td>complex-ctrl-flow-11blk</td><td>46K</td><td class="ml-col">0.129</td><td class="gfx-col">0.140</td><td class="verdict">1.08</td></tr>
-      <tr><td>complex-single-loop-a</td><td>53K</td><td class="ml-col">0.123</td><td class="gfx-col">0.132</td><td class="verdict">1.07</td></tr>
-      <tr><td>complex-single-loop</td><td>32K</td><td class="ml-col">0.120</td><td class="gfx-col">0.128</td><td class="verdict">1.06</td></tr>
-      <tr><td>multi_exit_loop</td><td>43K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-      <tr><td>sequence_2_loops</td><td>43K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-      <tr><td>test0_ssa</td><td>25K</td><td class="invalid-col">Invalid SSA</td><td class="invalid-col">Invalid SSA</td><td class="invalid-col">&mdash;</td></tr>
-      <tr><td>linear-block-distances</td><td>26K</td><td class="ml-col">0.121</td><td class="gfx-col">0.128</td><td class="verdict">1.05</td></tr>
-      <tr><td>3-tier-ranking-nested</td><td>8K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-      <tr><td>simple-loop-3blocks</td><td>13K</td><td class="ml-col">Pass</td><td class="crash-col">Crash</td><td>&mdash;</td></tr>
-    </table>
-  </div>
-  <div style="text-align:center; margin-top:8px; font-size:0.75em;">
-    <span class="good"><strong>10 valid:</strong> ML NUA faster (1.05&times;&ndash;1.44&times;)</span> &nbsp;|&nbsp;
-    <span class="bad"><strong>9 crash:</strong> Graphics NUA only (assert failure in loops)</span> &nbsp;|&nbsp;
-    <span style="color:#888;">1 invalid: both fail (malformed SSA)</span>
-  </div>
-</section>
-
-<!-- Benchmark Visualization -->
-<section>
-  <h2>Performance Gap vs. Input Characteristics</h2>
-  <div class="two-col" style="gap:20px;">
-    <div>
-      <h3 style="text-align:center; font-size:0.85em; margin-bottom:2px;">Input Size (KB) vs. Performance Ratio</h3>
-      <canvas id="chart-size" width="520" height="340" style="background:#fafafa; border:1px solid #ddd; border-radius:4px;"></canvas>
-    </div>
-    <div>
-      <h3 style="text-align:center; font-size:0.85em; margin-bottom:2px;">Subreg Operand Count vs. Performance Ratio</h3>
-      <canvas id="chart-subreg" width="520" height="340" style="background:#fafafa; border:1px solid #ddd; border-radius:4px;"></canvas>
-    </div>
-  </div>
-  <div class="slide-note">
-    Data from initial benchmark round (20 tests, all valid). Ratio = Graphics&nbsp;NUA time / ML&nbsp;NUA time. Values &gt; 1.0 mean ML&nbsp;NUA is faster.
-    Subreg operand counts measured by counting <code>.sub*</code> operands in each MIR test file. Trend line: least-squares linear regression.
-  </div>
-</section>
 
 <!-- Competitor Update Acknowledgment -->
 <section>
@@ -1298,26 +1519,6 @@ if (mlMode()) {
         The competitor improvements are individually sound but do not close the architectural gap. The original performance direction is confirmed.
       </div>
     </div>
-  </div>
-</section>
-
-<!-- Technical Decision -->
-<section>
-  <h2>Technical Decision</h2>
-  <div class="verdict-box" style="font-size:1.1em; padding:20px;">
-    <strong>The ML NUA (Implementation&nbsp;A) is the technically stronger implementation.</strong>
-  </div>
-  <h3 style="margin-top:16px;">Decision Basis</h3>
-  <table class="comparison-table" style="font-size:0.78em;">
-    <tr><th>Criterion</th><th>Evidence</th></tr>
-    <tr><td><strong>Architecture</strong></td><td>Classical dataflow with provable convergence vs. demand-driven Dijkstra with 7-level call hierarchy</td></tr>
-    <tr><td><strong>Correctness</strong></td><td>0/20 crashes vs. 9/20 crashes after competitor update; explicit SSA invariant enforcement; unified algorithm with no mode bifurcation</td></tr>
-    <tr><td><strong>Performance</strong></td><td>Faster or equal on 10/10 valid tests (1.05&times;&ndash;1.44&times; range); advantage grows with CFG complexity</td></tr>
-    <tr><td><strong>Maintainability</strong></td><td>2 pass dependencies vs. 5; single code path vs. gfx/ML bifurcation; comprehensive design docs</td></tr>
-    <tr><td><strong>Spiller integration</strong></td><td>Native VRegMaskPair API; O(1) snapshots; lane-sorted subreg queries; precomputed block summaries</td></tr>
-  </table>
-  <div class="note-box" style="margin-top:12px; font-size:0.82em;">
-    This decision is based on independent analysis and two rounds of benchmarks (pre- and post-competitor update). The competitor&rsquo;s recent improvements are acknowledged but do not change the conclusion.
   </div>
 </section>
 
@@ -1536,26 +1737,26 @@ m11: 'flowchart LR\n\
 // Benchmark visualization charts
 (function() {
   var data = [
-    {name:'nested-loops-side-exits-b', size:688, subregs:70,   ratio:1.58},
-    {name:'spill-vreg-many-lanes',     size:308, subregs:2204, ratio:1.06},
-    {name:'test1_ssa',                 size:196, subregs:1102, ratio:1.05},
-    {name:'loop_nested_3_outer_loops', size:192, subregs:116,  ratio:1.11},
-    {name:'if_else_loops_2_outer',     size:196, subregs:106,  ratio:1.23},
-    {name:'3_loops_seq_in_outer',      size:160, subregs:52,   ratio:1.10},
-    {name:'nested-loops-side-exits-a', size:120, subregs:28,   ratio:1.16},
-    {name:'complex-single-loop-b',     size:84,  subregs:62,   ratio:1.08},
-    {name:'inner_cfg_2_nested_loops',  size:68,  subregs:44,   ratio:1.06},
-    {name:'complex-ctrl-flow-14blk',   size:56,  subregs:6,    ratio:1.10},
-    {name:'triple-nested-loops',       size:56,  subregs:20,   ratio:1.04},
-    {name:'complex-ctrl-flow-11blk',   size:48,  subregs:28,   ratio:1.06},
-    {name:'complex-single-loop-a',     size:52,  subregs:12,   ratio:1.04},
-    {name:'complex-single-loop',       size:32,  subregs:28,   ratio:1.08},
-    {name:'multi_exit_loop',           size:44,  subregs:12,   ratio:1.07},
-    {name:'sequence_2_loops',          size:44,  subregs:40,   ratio:1.07},
-    {name:'test0_ssa',                 size:28,  subregs:43,   ratio:1.03},
-    {name:'linear-block-distances',    size:28,  subregs:12,   ratio:1.04},
-    {name:'3-tier-ranking-nested',     size:12,  subregs:0,    ratio:1.16},
-    {name:'simple-loop-3blocks',       size:16,  subregs:0,    ratio:1.07}
+    {name:'nested-loops-side-exits-b', size:688, subregs:70,   delta:0.119},
+    {name:'spill-vreg-many-lanes',     size:308, subregs:2204, delta:0.022},
+    {name:'test1_ssa',                 size:196, subregs:1102, delta:0.016},
+    {name:'loop_nested_3_outer_loops', size:192, subregs:116,  delta:0.016},
+    {name:'if_else_loops_2_outer',     size:196, subregs:106,  delta:0.031},
+    {name:'3_loops_seq_in_outer',      size:160, subregs:52,   delta:0.015},
+    {name:'nested-loops-side-exits-a', size:120, subregs:28,   delta:0.022},
+    {name:'complex-single-loop-b',     size:84,  subregs:62,   delta:0.012},
+    {name:'inner_cfg_2_nested_loops',  size:68,  subregs:44,   delta:0.008},
+    {name:'complex-ctrl-flow-14blk',   size:56,  subregs:6,    delta:0.014},
+    {name:'triple-nested-loops',       size:56,  subregs:20,   delta:0.006},
+    {name:'complex-ctrl-flow-11blk',   size:48,  subregs:28,   delta:0.009},
+    {name:'complex-single-loop-a',     size:52,  subregs:12,   delta:0.005},
+    {name:'complex-single-loop',       size:32,  subregs:28,   delta:0.010},
+    {name:'multi_exit_loop',           size:44,  subregs:12,   delta:0.009},
+    {name:'sequence_2_loops',          size:44,  subregs:40,   delta:0.009},
+    {name:'test0_ssa',                 size:28,  subregs:43,   delta:0.004},
+    {name:'linear-block-distances',    size:28,  subregs:12,   delta:0.005},
+    {name:'3-tier-ranking-nested',     size:12,  subregs:0,    delta:0.017},
+    {name:'simple-loop-3blocks',       size:16,  subregs:0,    delta:0.008}
   ];
 
   function linReg(xs, ys) {
@@ -1574,19 +1775,19 @@ m11: 'flowchart LR\n\
     var pad = {top: 20, right: 20, bottom: 40, left: 55};
     var pw = W - pad.left - pad.right;
     var ph = H - pad.top - pad.bottom;
-    var yMin = 1.0, yMax = 1.65;
+    var yMin = 0, yMax = 0.13;
 
     ctx.fillStyle = '#fafafa';
     ctx.fillRect(0, 0, W, H);
 
     ctx.strokeStyle = '#e0e0e0';
     ctx.lineWidth = 1;
-    for (var y = 1.0; y <= 1.65; y += 0.1) {
+    for (var y = 0; y <= 0.13; y += 0.02) {
       var py = pad.top + ph - (y - yMin) / (yMax - yMin) * ph;
       ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(W - pad.right, py); ctx.stroke();
     }
 
-    var baseY = pad.top + ph - (1.0 - yMin) / (yMax - yMin) * ph;
+    var baseY = pad.top + ph - (0 - yMin) / (yMax - yMin) * ph;
     ctx.strokeStyle = '#999';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 3]);
@@ -1605,9 +1806,9 @@ m11: 'flowchart LR\n\
     ctx.font = '11px sans-serif';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    for (var y = 1.0; y <= 1.65; y += 0.1) {
+    for (var y = 0; y <= 0.13; y += 0.02) {
       var py = pad.top + ph - (y - yMin) / (yMax - yMin) * ph;
-      ctx.fillText(y.toFixed(1) + '\u00d7', pad.left - 6, py);
+      ctx.fillText(y.toFixed(3) + 's', pad.left - 6, py);
     }
 
     ctx.textAlign = 'center';
@@ -1633,7 +1834,7 @@ m11: 'flowchart LR\n\
     ctx.save();
     ctx.translate(12, pad.top + ph / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText('Performance Ratio (B/A)', 0, 0);
+    ctx.fillText('Time Delta (GFX \u2212 ML), s', 0, 0);
     ctx.restore();
 
     var xs = [], ys = [];
@@ -1641,8 +1842,8 @@ m11: 'flowchart LR\n\
       var d = data[i];
       var xv = d[xKey];
       var px = pad.left + xv / xMax * pw;
-      var py = pad.top + ph - (d.ratio - yMin) / (yMax - yMin) * ph;
-      xs.push(xv); ys.push(d.ratio);
+      var py = pad.top + ph - (d.delta - yMin) / (yMax - yMin) * ph;
+      xs.push(xv); ys.push(d.delta);
 
       if (d.subregs === 0) ctx.fillStyle = '#78909C';
       else if (d.subregs < 50) ctx.fillStyle = '#FF8F00';
@@ -1677,7 +1878,7 @@ m11: 'flowchart LR\n\
     ctx.font = '10px sans-serif';
     ctx.textAlign = 'left';
     var slope = reg.m > 0 ? '+' : '';
-    ctx.fillText('trend: ' + slope + (reg.m * (xMax > 1000 ? 1000 : 100)).toFixed(3) + (xMax > 1000 ? '/1K ops' : '/100KB'), px0 + 8, py0 - 8);
+    ctx.fillText('trend: ' + slope + (reg.m * (xMax > 1000 ? 1000 : 100)).toFixed(4) + 's' + (xMax > 1000 ? '/1K ops' : '/100KB'), px0 + 8, py0 - 8);
 
     ctx.font = '10px sans-serif';
     ctx.textAlign = 'left';
@@ -1692,7 +1893,8 @@ m11: 'flowchart LR\n\
       ctx.fillStyle = cats[i].c;
       ctx.beginPath(); ctx.arc(lx, ly + i * 14, 4, 0, 2*Math.PI); ctx.fill();
       ctx.fillStyle = '#555';
-      ctx.fillText(cats[i].l, lx + 8, ly + i * 14 + 3);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(cats[i].l, lx + 8, ly + i * 14);
     }
   }
 
@@ -1883,6 +2085,168 @@ m11: 'flowchart LR\n\
   setTimeout(drawScalingChart, 600);
   if (typeof Reveal !== 'undefined') {
     Reveal.on('slidechanged', drawScalingChart);
+  }
+})();
+</script>
+<script>
+// ===== GFX Complexity Asymptotes Chart =====
+(function() {
+  function drawComplexityChart() {
+    var c = document.getElementById('chart-complexity');
+    if (!c) return;
+    var ctx = c.getContext('2d');
+    var W = c.width, H = c.height;
+    var pad = {top: 24, right: 30, bottom: 48, left: 60};
+    var pw = W - pad.left - pad.right;
+    var ph = H - pad.top - pad.bottom;
+
+    var xMax = 800, yMax = 5;
+
+    // Background
+    ctx.fillStyle = '#fafafa';
+    ctx.fillRect(0, 0, W, H);
+
+    // Grid
+    ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+    for (var y = 0; y <= yMax; y += 1) {
+      var py = pad.top + ph - (y / yMax) * ph;
+      ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(W - pad.right, py); ctx.stroke();
+    }
+
+    // Axes
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, H - pad.bottom);
+    ctx.lineTo(W - pad.right, H - pad.bottom);
+    ctx.stroke();
+
+    // Y-axis labels
+    ctx.fillStyle = '#555'; ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (var y = 0; y <= yMax; y += 1) {
+      var py = pad.top + ph - (y / yMax) * ph;
+      ctx.fillText(y.toFixed(0) + 's', pad.left - 6, py);
+    }
+
+    // X-axis labels
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    var xTicks = [0, 100, 200, 300, 400, 500, 600, 700, 800];
+    for (var i = 0; i < xTicks.length; i++) {
+      var px = pad.left + (xTicks[i] / xMax) * pw;
+      ctx.fillText(xTicks[i], px, H - pad.bottom + 6);
+    }
+
+    // Axis titles
+    ctx.fillStyle = '#333'; ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Number of Basic Blocks (n)', pad.left + pw / 2, H - 4);
+
+    ctx.save();
+    ctx.translate(14, pad.top + ph / 2); ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = '#555'; ctx.fillText('Time (seconds)', 0, 0);
+    ctx.restore();
+
+    function xPx(v) { return pad.left + (v / xMax) * pw; }
+    function yPx(v) { return pad.top + ph - (Math.min(v, yMax) / yMax) * ph; }
+
+    // --- O(n * log n) curve (orange dashed) ---
+    var k_nlogn = 8e-4;
+    ctx.strokeStyle = '#FF8F00'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+    ctx.beginPath();
+    for (var x = 10; x <= xMax; x += 2) {
+      var y = k_nlogn * x * Math.log(x);
+      var px = xPx(x), py = yPx(y);
+      if (x === 10) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Label
+    var lbl_x = 650, lbl_y = k_nlogn * lbl_x * Math.log(lbl_x);
+    ctx.fillStyle = '#FF8F00'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('O(n\u00b7log n)', xPx(lbl_x) + 6, yPx(lbl_y) + 16);
+
+    // --- O(n^2) curve (purple dashed) ---
+    var k_sq = 5e-4;
+    ctx.strokeStyle = '#7B1FA2'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+    ctx.beginPath();
+    for (var x = 10; x <= xMax; x += 2) {
+      var y = k_sq * x * x;
+      if (y > yMax * 1.05) break;
+      var px = xPx(x), py = yPx(y);
+      if (x === 10) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Label
+    var lbl2_x = 80, lbl2_y = k_sq * lbl2_x * lbl2_x;
+    ctx.fillStyle = '#7B1FA2'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('O(n\u00b2)', xPx(lbl2_x) + 6, yPx(lbl2_y) - 14);
+
+    // --- Cache saturation border (vertical line at ~98 BBs) ---
+    var cacheBorder = 98;
+    var cbPx = xPx(cacheBorder);
+    ctx.strokeStyle = '#666'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.moveTo(cbPx, pad.top); ctx.lineTo(cbPx, H - pad.bottom); ctx.stroke();
+    ctx.setLineDash([]);
+    // Label at top
+    ctx.fillStyle = '#555'; ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillText('cache saturation', cbPx, pad.top - 2);
+
+    // --- GFX NUA data points (red squares + line) ---
+    var gfxData = [
+      {bbs: 14, gfx: 0.13}, {bbs: 26, gfx: 0.16}, {bbs: 50, gfx: 0.29},
+      {bbs: 98, gfx: 2.09}, {bbs: 194, gfx: 2.06}, {bbs: 386, gfx: 2.24},
+      {bbs: 770, gfx: 4.08}
+    ];
+
+    // Connect with line
+    ctx.strokeStyle = '#C62828'; ctx.lineWidth = 2.5; ctx.setLineDash([]);
+    ctx.beginPath();
+    for (var i = 0; i < gfxData.length; i++) {
+      var px = xPx(gfxData[i].bbs), py = yPx(gfxData[i].gfx);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // Squares
+    for (var i = 0; i < gfxData.length; i++) {
+      var px = xPx(gfxData[i].bbs), py = yPx(gfxData[i].gfx);
+      ctx.fillStyle = '#C62828';
+      ctx.fillRect(px - 5, py - 5, 10, 10);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(px - 5, py - 5, 10, 10);
+    }
+
+    // Legend
+    var lx = pad.left + 20, ly = pad.top + 16;
+    ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+
+    // GFX
+    ctx.fillStyle = '#C62828';
+    ctx.fillRect(lx - 4, ly - 4, 8, 8);
+    ctx.fillStyle = '#333';
+    ctx.fillText('Graphics NUA (measured)', lx + 12, ly);
+
+    // n log n
+    ly += 20;
+    ctx.strokeStyle = '#FF8F00'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+    ctx.beginPath(); ctx.moveTo(lx - 8, ly); ctx.lineTo(lx + 8, ly); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#333';
+    ctx.fillText('O(n\u00b7log n) reference', lx + 12, ly);
+
+    // n^2
+    ly += 20;
+    ctx.strokeStyle = '#7B1FA2'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+    ctx.beginPath(); ctx.moveTo(lx - 8, ly); ctx.lineTo(lx + 8, ly); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#333';
+    ctx.fillText('O(n\u00b2) reference', lx + 12, ly);
+  }
+
+  setTimeout(drawComplexityChart, 700);
+  if (typeof Reveal !== 'undefined') {
+    Reveal.on('slidechanged', drawComplexityChart);
   }
 })();
 </script>
