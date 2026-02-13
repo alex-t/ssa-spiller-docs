@@ -402,28 +402,82 @@ if ((D.first & R.first) == D.first) {
 <!-- Relative Distance Storage -->
 <section>
   <h2>Relative Distance Storage Scheme</h2>
-  <h3>Core Innovation: Negative-Offset Encoding</h3>
-  <div class="mermaid-output" id="m7"></div>
-  <div class="two-col">
-    <div>
-      <h3>Materialization Formula</h3>
-      <pre><code class="language-cpp">int64_t materialize(int64_t Stored,
+  <h3 style="margin-bottom:4px;">Core Innovation: Negative-Offset Encoding</h3>
+  <div class="two-col" style="gap:24px; align-items:flex-start;">
+    <div style="flex:0.7;">
+      <!-- Current Block diagram as HTML table -->
+      <table style="border-collapse:collapse; font-size:0.65em; margin:0 auto; width:100%;">
+        <tr><td colspan="3" style="background:#fff8e1; border:2px solid #ffc107; padding:4px 8px; text-align:center; font-weight:bold;">Current Block &mdash; EntryOff&nbsp;=&nbsp;5</td></tr>
+        <tr style="color:#888; font-size:0.85em;">
+          <td style="text-align:center; padding:2px 6px; width:25%;"><em>Stored</em></td>
+          <td style="text-align:center; padding:2px 6px; border-left:1px solid #ddd; border-right:1px solid #ddd;"><em>Instruction</em></td>
+          <td style="text-align:center; padding:2px 6px; width:25%;"><em>Offset</em></td>
+        </tr>
+        <tr>
+          <td style="text-align:center; color:#999;"></td>
+          <td style="text-align:center; padding:4px; border-left:1px solid #ddd; border-right:1px solid #ddd; background:#f9f9f9;">instr 1</td>
+          <td style="text-align:center; color:#666;">4</td>
+        </tr>
+        <tr style="background:#E3F2FD;">
+          <td style="text-align:center; font-weight:bold; color:#1565C0;">-3</td>
+          <td style="text-align:center; padding:4px; border:2px solid #1565C0; font-weight:bold; color:#1565C0;">QUERY POINT</td>
+          <td style="text-align:center; font-weight:bold; color:#1565C0;">3</td>
+        </tr>
+        <tr>
+          <td style="text-align:center; color:#666;">-2</td>
+          <td style="text-align:center; padding:4px; border-left:1px solid #ddd; border-right:1px solid #ddd; background:#f9f9f9;">instr 3</td>
+          <td style="text-align:center; color:#666;">2</td>
+        </tr>
+        <tr>
+          <td style="text-align:center; color:#666;">-1</td>
+          <td style="text-align:center; padding:4px; border-left:1px solid #ddd; border-right:1px solid #ddd; background:#f9f9f9;">instr 4</td>
+          <td style="text-align:center; color:#666;">1</td>
+        </tr>
+        <tr>
+          <td style="text-align:center; color:#999;"></td>
+          <td style="text-align:center; padding:4px; border-left:1px solid #ddd; border-right:1px solid #ddd; background:#f9f9f9;">instr 5</td>
+          <td style="text-align:center; color:#666;">0</td>
+        </tr>
+      </table>
+      <!-- CFG edge arrow -->
+      <div style="text-align:center; font-size:1.4em; margin:4px 0; color:#555;">&darr; <span style="font-size:0.6em;">CFG edge</span></div>
+      <!-- Successor Block -->
+      <table style="border-collapse:collapse; font-size:0.65em; margin:0 auto; width:80%;">
+        <tr><td colspan="2" style="background:#E8F5E9; border:2px solid #2E7D32; padding:4px 8px; text-align:center; font-weight:bold;">Successor &mdash; EntryOff&nbsp;=&nbsp;3</td></tr>
+        <tr>
+          <td style="text-align:center; padding:4px; background:#f9f9f9; border:1px solid #ddd;">instr 1</td>
+          <td style="width:30%;"></td>
+        </tr>
+        <tr>
+          <td style="text-align:center; padding:4px; background:#f9f9f9; border:1px solid #ddd;">instr 2</td>
+          <td></td>
+        </tr>
+        <tr style="background:#E8F5E9;">
+          <td style="text-align:center; padding:4px; border:2px solid #2E7D32; font-weight:bold; color:#2E7D32;">USE %x</td>
+          <td style="text-align:center; font-size:0.9em; color:#2E7D32; font-weight:bold;">Stored&nbsp;=&nbsp;-1</td>
+        </tr>
+      </table>
+    </div>
+    <div style="flex:1;">
+      <h3 style="margin:0 0 4px;">Materialization Formula</h3>
+      <pre style="margin:4px 0;"><code class="language-cpp">int64_t materialize(int64_t Stored,
                     unsigned SnapshotOffset) {
   int64_t Mat64 = Stored + SnapshotOffset;
   return (Mat64 <= 0) ? 0 : Mat64;
 }</code></pre>
-    </div>
-    <div>
-      <table class="comparison-table">
+      <table class="comparison-table" style="margin-top:8px;">
         <tr><th>Step</th><th>Formula</th><th>Value</th></tr>
         <tr><td>Stored in Succ</td><td>-1</td><td>-1</td></tr>
         <tr><td>Rebase to MBB</td><td>-1 + EntryOff[Succ]=3</td><td>2</td></tr>
         <tr><td>Materialize @ MI</td><td>2 + InstrOffset=3</td><td><strong>5</strong></td></tr>
       </table>
-      <p><strong>Result:</strong> Next use is 5 instructions away</p>
+      <p style="margin-top:6px;"><strong>Result:</strong> Next use is <strong>5</strong> instructions away</p>
+      <div class="highlight-block" style="margin-top:10px; padding:8px; font-size:0.8em;">
+        <strong>Key idea:</strong> Distances are stored as <strong>negative offsets</strong> from the block bottom. Propagation across edges just adds <code>EntryOff[Succ]</code>. Materialization at any instruction adds its <code>InstrOffset</code>.
+      </div>
     </div>
   </div>
-  <p class="slide-note">This scheme enables efficient block-to-block propagation: just add EntryOffset. Source: <code>AMDGPUNextUseAnalysis.cpp:18-50</code></p>
+  <p class="slide-note">Source: <code>AMDGPUNextUseAnalysis.cpp:18-50</code></p>
 </section>
 
 <!-- Three-Tier Ranking -->
@@ -1383,25 +1437,16 @@ m6: 'flowchart TD\n\
     style U fill:#ffebee,stroke:#C62828,stroke-width:2px\n\
     style R fill:#f5f5f5,stroke:#888',
 
-m7: 'flowchart LR\n\
-    subgraph MBB["Current Block - 5 instrs"]\n\
+m7: 'flowchart TD\n\
+    subgraph MBB["Current Block -- EntryOff = 5"]\n\
         direction TB\n\
-        T["Offset=5 top = EntryOff"]\n\
-        I1[instr 1]\n\
-        QP["QUERY POINT Offset=3"]\n\
-        I3[instr 3]\n\
-        B["Offset=0 bottom"]\n\
+        I1[instr] --> QP["QUERY POINT\\nOffset = 3"] --> I3[instr]\n\
     end\n\
-    subgraph Succ["Successor - 3 instrs"]\n\
+    I3 -->|"CFG edge"| S1\n\
+    subgraph Succ["Successor"]\n\
         direction TB\n\
-        ST["Offset=3 top"]\n\
-        S1[instr 5]\n\
-        Use["USE %x Stored = -1"]\n\
-        SB["Offset=0 bottom"]\n\
+        S1[instr] --> Use["USE %x\\nStored = -1"] --> S3[instr]\n\
     end\n\
-    T --> I1 --> QP --> I3 --> B\n\
-    ST --> S1 --> Use --> SB\n\
-    B -->|CFG edge| ST\n\
     style QP fill:#bbdefb,stroke:#1565C0,stroke-width:2px\n\
     style Use fill:#c8e6c9,stroke:#2E7D32,stroke-width:2px',
 

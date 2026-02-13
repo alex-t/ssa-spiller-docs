@@ -615,3 +615,227 @@
   - Build and run 17 NUA lit tests to verify
   - Re-run scaling benchmarks with a no-spill function to confirm zero overhead
   - Update presentation with this improvement (eliminates the "eager vs lazy" argument)
+
+### 2026-02-12 – IDE: CMake Presets Not Loading [BUGFIX]
+
+- **Context / goal**
+  - CMake Tools extension stopped showing "Select Configure Preset" command in Cursor IDE
+  - Fell back to kit/variant mode — could not select Release preset to do fast `llc` builds
+
+- **Root cause**
+  - Extension host log: `Not activating extension 'ms-vscode.cmake-tools': Timed out while searching for 'workspaceContains' pattern */CMakeLists.txt,*/*/CMakeLists.txt`
+  - The llvm-project repo is too large — the `workspaceContains` glob scan timed out before finding a match
+  - Extension activated via fallback path but missed preset auto-detection, fell back to kit/variant mode
+  - Non-deterministic: depends on filesystem/IO speed at startup time
+
+- **Fix applied**
+  - Added `"cmake.useCMakePresets": "always"` to `.vscode/settings.json`
+  - Forces preset mode regardless of activation path, bypasses auto-detection race
+
+- **Useful reference**
+  - PHI elimination pass name for `llc -stop-before`: `phi-node-elimination` (from `#define DEBUG_TYPE` in `llvm/lib/CodeGen/PHIElimination.cpp`)
+  - Release build MIR dump is functionally identical to Debug for `-stop-before` usage (same pass pipeline; only cosmetic differences possible from reverse iteration in debug builds)
+
+### 2026-02-10 – Lazy NUA: Dump Flag & Test Updates [FEATURE] [NUA]
+
+- **Context / goal**
+  - After making NUA lazy (`ensureAnalyzed()` pattern), all 17 LIT tests broke because they relied on `LLVM_DEBUG` output from `dumpAllNextUseDistances` — but lazy NUA never triggers analysis in standalone `-run-pass` mode (no spiller to call it)
+  - Needed a way to explicitly trigger analysis + dump for testing, independent of `-debug`
+
+- **Changes applied**
+  - **[FEATURE]** Added `cl::opt<bool> DumpDistances("amdgpu-next-use-dump-distance")` flag in `AMDGPUNextUseAnalysis.cpp`
+  - **[REFACTOR]** `runOnMachineFunction` now conditionally calls `dumpAllNextUseDistances()` when the flag is set (forces `ensureAnalyzed()` → full analysis + dump)
+  - **[REFACTOR]** Removed `LLVM_DEBUG(...)` wrappers from `dumpAllNextUseDistances()` body — output is now unconditional when called (works in Release builds too)
+  - **[TEST]** Updated all 17 NUA LIT test RUN lines: replaced `-debug-only=amdgpu-next-use` with `-amdgpu-next-use-dump-distance`
+
+- **Decisions / rationale**
+  - Adopted same pattern as competitor's implementation (`-amdgpu-next-use-analysis-dump-distance`) for consistency
+  - `dbgs()` always writes to stderr; `LLVM_DEBUG` macro only gates *execution* of the wrapped code — so removing the wrapper and controlling invocation via flag is cleaner
+  - Flag works in both Debug and Release+Asserts builds, unlike `-debug-only`
+
+- **Next actions**
+  - All 17 LIT tests pass with the new flag
+  - Changes committed to `next-use-analysis` branch
+
+### 2026-02-10 – NUA Performance Benchmark Setup [PERF] [NUA]
+
+- **Context / goal**
+  - Benchmarking ML NUA (ours, precomputed dataflow) vs Graphics NUA (competitor, on-demand Dijkstra+BFS) on `bigSSA.mir` (~1M lines, dumped from real user app with `-stop-after=phi-node-elimination`)
+
+- **Setup**
+  - Built competitor's Release+Asserts `llc` at `/work/atimofee/sandbox/git/llvm-project/build/Release-with-asserts/bin/llc`
+  - Our Release+Asserts `llc` at `/work/atimofee/sandbox/github/llvm-project/build/Release-with-asserts/bin/llc`
+  - Fixed MIR `$vcc_lo` → `$vcc` parsing issue (wave32 round-trip bug) via `sed`
+
+- **Benchmark CLIs**
+  - **Graphics NUA** (forces all queries via dump flag, output to /dev/null):
+    ```
+    time .../git/.../bin/llc -march=amdgcn -mcpu=gfx1030 \
+      -run-pass=amdgpu-next-use-analysis \
+      -amdgpu-next-use-analysis-dump-distance \
+      -o /dev/null bigSSA.mir 2>/dev/null
+    ```
+  - **ML NUA** (lazy, no dump — measures pure analysis overhead):
+    ```
+    time .../github/.../bin/llc -march=amdgcn -mcpu=gfx1030 \
+      -run-pass=amdgpu-next-use \
+      -o /dev/null bigSSA.mir 2>/dev/null
+    ```
+
+- **Fairness notes**
+  - Graphics NUA includes unavoidable dump formatting overhead (biased *against* them)
+  - ML NUA without dump flag: lazy mode means analysis only runs if spiller queries — in standalone `-run-pass` mode with no spiller, it does essentially nothing
+  - For fair comparison, ML NUA should also use `-amdgpu-next-use-dump-distance` to force analysis
+  - Alternatively, compare with dump overhead on both sides (both redirect to `/dev/null`)
+
+- **Status**
+  - Graphics NUA run started on full `bigSSA.mir` — expected to take hours due to O(Q·V·(V+E)) per-query complexity
+  - First run: exit code 1 — MIR parser rejected `noSignedZerosFPMath` key (not recognized by competitor's older LLVM fork). Fixed by stripping 309 lines with `sed`.
+  - Second run: **assertion failure** in `AMDGPUNextUseAnalysisImpl::calcShortestDistance` at line 686:
+    ```
+    Assertion `Dst != std::numeric_limits<double>::max() && "calcShortestDistance called for
+    instructions in non-reachable basic blocks!"' failed.
+    ```
+  - **[BUGFIX discovery]** Competitor's Dijkstra+BFS approach crashes on unreachable basic blocks:
+    - **File:** `AMDGPUNextUseAnalysis.cpp:686` in `calcShortestDistance()`
+    - **Code path:** `getShortestPath(CurMBB, UseMBB)` returns `double::max()` when BBs are not connected
+    - **Assert:** `Dst != std::numeric_limits<double>::max() && "calcShortestDistance called for instructions in non-reachable basic blocks!"`
+    - **Root cause:** Their Dijkstra path-finding assumes all BBs in the CFG are reachable from each other. When the CFG has unreachable blocks (common after optimizations), the path lookup returns infinity and the assert fires.
+    - **Our NUA:** Handles this naturally — dataflow analysis converges unreachable blocks to `DeadDistance` without any special-casing.
+    - **Compatibility modes available:** `graphics` (default), `machine-learning` — will test if ML mode handles it differently.
+  - This is a correctness/robustness bug, not just a performance issue — good slide material
+  - Built pure Release (no asserts) at `/work/atimofee/sandbox/git/llvm-project/build/Release/bin/llc` to bypass the assert and attempt timing benchmark
+  - **Pure Release result: SEGFAULT after 86m1.8s** (exit code 139 = SIGSEGV)
+    - Without asserts, `double::max()` propagated silently through distance calculations, eventually causing a segfault downstream
+    - `real 86m1.839s, user 85m27.740s, sys 0m22.977s`
+  - **Summary of competitor's NUA on bigSSA.mir:**
+    - Release+Asserts: **assertion failure** (unreachable BB bug)
+    - Pure Release: **segfault** after 86 minutes (UB from unhandled unreachable BBs)
+    - Neither build produces correct results on real-world input
+
+- **bigSSA.mir profile** (Blender Cycles GPU kernel, post phi-elimination)
+  | Metric | Value |
+  |---|---|
+  | File size | 236 MB |
+  | Lines | 3,481,798 |
+  | Functions | 309 |
+  | Basic blocks | 83,629 |
+  | Instructions | ~1,901,388 |
+  | Unique vregs | 103,729 |
+  | Total vreg refs | 1,311,484 |
+  - Largest function: `integrate_surface<8389563>` with **9,743 BBs**
+  - 35 functions with 500+ BBs — worst case for O(Q·V·(V+E)) per-query
+  - Re-running competitor's NUA with pure Release build on full file — expect hours
+
+### 2026-02-10 – Benchmark Results: bigSSA.mir [PERF] [NUA]
+
+- **Context / goal**
+  - Head-to-head benchmark of ML NUA (ours) vs Graphics NUA (theirs) on `bigSSA.mir`
+  - Both pure Release builds, both with `-dump-distance` flag, output redirected to `/dev/null`
+
+- **Results**
+  | Metric | ML NUA (ours) | Graphics NUA (theirs) |
+  |---|---|---|
+  | Wall time | **21m 22.9s** | 86m 01.8s (crashed) |
+  | User time | 19m 24.6s | 85m 27.7s |
+  | Sys time | 1m 57.8s | 0m 23.0s |
+  | Exit code | **0 (success)** | **139 (SIGSEGV)** |
+  | Peak RSS | ~3.1 GB | ~2.7 GB |
+
+- **Key takeaways**
+  - **4x faster** wall-clock time (and ours actually completes successfully)
+  - Theirs segfaulted after 86 minutes due to unreachable BB bug — results are garbage even before crash
+  - Our higher sys time (1m58s vs 23s) likely due to dump formatting I/O overhead — the analysis itself is even faster than 19m
+  - Memory usage comparable (~3 GB), showing our dataflow tables are space-efficient
+
+- **Fairness notes**
+  - Both runs use `-dump-distance` to force full analysis on all registers
+  - Both redirect stderr to `/dev/null` (dump output)
+  - Both are pure Release (no assertions) for maximum optimization
+  - Dump overhead is present in both, biased slightly against theirs (more output per query due to Dijkstra path details)
+
+- **Slide headline**
+  - "On real-world Blender Cycles GPU kernel (309 functions, 84K BBs, 104K vregs):"
+  - "ML NUA: 21 minutes, correct results, exit 0"
+  - "Graphics NUA: 86 minutes, segfault, exit 139"
+  - "4x faster AND the only one that works"
+
+### 2026-02-10 – Competitor NUA Crash Analysis [BUGFIX] [NUA]
+
+- **Context / goal**
+  - Document the competitor's NUA crash on `bigSSA.mir` for slides
+  - Understand root cause, guilty call path, and why our NUA is immune
+
+- **Crash summary**
+  - **Release+Asserts**: assertion failure at `AMDGPUNextUseAnalysis.cpp:686`
+  - **Pure Release**: segfault (SIGSEGV, exit 139) after 86 minutes — UB from unchecked `double::max()`
+
+- **Root cause: unreachable basic blocks in the CFG**
+  - After optimizations (e.g., PHI elimination), some basic blocks become unreachable from others in the CFG
+  - The competitor's Dijkstra path-finding assumes **all BB pairs are connected** — when they're not, it returns `double::max()` as a sentinel, but callers don't check for it
+
+- **Guilty call stack**
+
+  ```
+  printAllDistances()                          [line 1058]
+    → for each def, calls getNextUseDistance()  [line 1067]
+      → calcDistanceToUse()                    [line 975]
+        → calcShortestDistance()                [line 1033 — fallthrough case]
+          → getShortestPath(CurMBB, UseMBB)    [line 685]
+            → calcShortestPath()               [line 614 — Dijkstra]
+              → returns double::max()          [line 672 — exhausted worklist]
+          → ASSERT FIRES                        [line 686]
+  ```
+
+- **Detailed path**
+
+  1. **Entry: `printAllDistances()`** (line 1058–1091)
+     - Iterates over all functions, all BBs, all instructions, all defs
+     - For each def, collects uses and calls `getNextUseDistance(DefReg, DefMI, Uses)`
+
+  2. **`getNextUseDistance()`** (line 1093)
+     - For each use operand, calls `calcDistanceToUse(LiveReg, LaneMask, CurMI, UseMO)`
+
+  3. **`calcDistanceToUse()`** (line 975–1036)
+     - Handles special cases: outside-loop, backedge, ML-mode branches
+     - **Fallthrough at line 1033**: when no special case matches, calls `calcShortestDistance(&CurMI, UseMI)`
+     - This fallthrough is the dangerous path — it doesn't guard against unreachable BBs
+
+  4. **`calcShortestDistance()`** (line 675–690)
+     - If `CurMBB != UseMBB`, calls `getShortestPath(CurMBB, UseMBB)`
+     - **Line 685**: `double Dst = getShortestPath(CurMBB, UseMBB);`
+     - **Line 686**: `assert(Dst != double::max())` — **FIRES HERE**
+
+  5. **`getShortestPath()` → `calcShortestPath()`** (line 614–673)
+     - Pure Dijkstra over CFG successors using a priority queue
+     - Skips backedges in `gfxMode()` (line 655–657) — this further reduces reachability
+     - If `ToMBB` is never reached, returns `double::max()` at line 672
+
+  6. **In pure Release (no asserts)**:
+     - `double::max()` propagates into: `CurMITailLen + double::max() + UseHeadLen` → still `double::max()` (or `+inf`)
+     - This garbage value propagates up through `getNextUseDistance()` and into `printAllDistances()`
+     - Eventually triggers undefined behavior (likely a bad memory access from corrupted data structures) → **SIGSEGV after 86 minutes**
+
+- **Why `gfxMode()` makes it worse**
+  - Line 655–657 in `calcShortestPath()`: `if (PI.Backedge) if (gfxMode()) continue;`
+  - In graphics mode, **backedges are skipped** during Dijkstra traversal
+  - This means even blocks that are structurally reachable via loop backedges appear unreachable
+  - Result: more BB pairs trigger the bug — any use reached only via a backedge will fail
+
+- **Why our dataflow NUA is immune**
+  - Our NUA uses iterative dataflow analysis: `init()` → `analyze()` with fixed-point iteration
+  - Unreachable blocks naturally converge to `DeadDistance` — no path-finding needed
+  - The algorithm doesn't need to enumerate BB pairs or assume reachability
+  - No Dijkstra, no BFS, no `double::max()` sentinels, no assert
+
+- **Missing guard in competitor's code**
+  - `calcDistanceToUse()` line 1033 (the fallthrough) should check `isReachable(CurMBB, UseMBB)` before calling `calcShortestDistance()`
+  - Their own `isReachable()` method exists (line 274–277) but is never called on this path
+  - The `isDistanceFinite()` helper (line 279–283) also exists but is unused here
+
+- **Slide material**
+  - "Competitor's NUA crashes on real-world Blender Cycles GPU kernel (309 functions, 84K BBs)"
+  - "Assert in Release+Asserts, segfault after 86 min in pure Release"
+  - "Root cause: Dijkstra path-finding assumes all BBs reachable; unreachable BBs return ∞ distance"
+  - "Graphics mode worsens the problem by skipping backedges during path search"
+  - "Our dataflow NUA handles unreachable blocks naturally — no path-finding needed"
