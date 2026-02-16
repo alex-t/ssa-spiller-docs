@@ -453,49 +453,46 @@ bool calcIsReachable(const MBB *From,
 
 <!-- Slide: Debug Dump Path Issues -->
 <section style="overflow:hidden;">
-  <h2>Debug Dump Path: Unfiltered Use Lists</h2>
-  <div style="display:flex; gap:12px; align-items:flex-start;">
+  <h2 style="margin-bottom:6px;">Debug Dump Path: Unfiltered Use Lists</h2>
+  <div style="display:flex; gap:10px; align-items:flex-start;">
     <div style="flex:1;">
-      <h3 style="margin-bottom:6px; color:#FF8F00;">The Unprotected Path</h3>
-      <pre style="font-size:0.55em; background:#fff8e1; border:1px solid #ffe082; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1050-L1060" target="_blank">printAllDistances()</a>
-// Collects ALL uses &mdash; no filtering!
+      <h3 style="margin-bottom:4px; font-size:0.95em; color:#FF8F00;">The Unprotected Path</h3>
+      <pre style="font-size:0.48em; background:#fff8e1; border:1px solid #ffe082; border-radius:4px; padding:4px 6px; margin:0; line-height:1.35;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1050-L1060" target="_blank">printAllDistances()</a> &mdash; collects ALL uses, no filtering!
 SmallVector&lt;const MachineOperand *&gt; Uses;
 for (auto &amp;UseMO : MRI-&gt;use_nodbg_operands(DefReg))
   Uses.push_back(&amp;UseMO);
 return <span style="background:#fff3cd;">getNextUseDistance(DefReg, DefMI, Uses)</span>;
-// &uarr; bypasses getUses() &rarr; unreachable &amp; backward
-//   uses reach calcDistanceToUse() unfiltered</pre>
-      <h3 style="margin-top:10px; margin-bottom:4px; color:#2E7D32;">The Normal (Safe) Path</h3>
-      <pre style="font-size:0.55em; background:#f1f8e9; border:1px solid #a5d6a7; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1131-L1145" target="_blank">computeLiveRegUses()</a> &mdash; spiller entry point
+// &uarr; bypasses getUses() &rarr; unfiltered uses crash</pre>
+      <h3 style="margin-top:6px; margin-bottom:4px; font-size:0.95em; color:#2E7D32;">The Normal (Safe) Path</h3>
+      <pre style="font-size:0.48em; background:#f1f8e9; border:1px solid #a5d6a7; border-radius:4px; padding:4px 6px; margin:0; line-height:1.35;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1131-L1145" target="_blank">computeLiveRegUses()</a> &mdash; spiller entry point
 this-&gt;getUses(Reg, LaneMask, MI, Uses); // &larr; filters!
-// GFX: <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L279-L283" target="_blank">isDistanceFinite()</a> runs Dijkstra &rarr; rejects unreachable
-// ML:  <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L274-L277" target="_blank">isReachable()</a> runs BFS &rarr; rejects unreachable
+// GFX: isDistanceFinite() &rarr; Dijkstra rejects unreachable
+// ML:  isReachable() &rarr; BFS rejects unreachable
 Dist = this-&gt;getNextUseDistance(Reg, ..., Uses);
 // &uarr; only reachable uses &rarr; no crash</pre>
     </div>
     <div style="flex:1;">
-      <h3 style="margin-bottom:6px;">What Happens</h3>
-      <ul style="font-size:0.72em; line-height:1.6;">
-        <li><code>printAllDistances()</code> is a <strong>debug-only</strong> function, gated behind <code>-amdgpu-next-use-analysis-dump-distance</code></li>
-        <li>It bypasses <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1069-L1111" target="_blank"><code>getUses()</code></a> and sends <strong>all</strong> register uses (including unreachable ones) to <code>getNextUseDistance()</code></li>
-        <li>Unreachable uses reach <code>calcShortestDistance()</code> which asserts <code>Dst&nbsp;!=&nbsp;max()</code></li>
-        <li>Backward same-block uses reach <code>calcDistanceToUse()</code> which asserts <code>D&nbsp;&gt;=&nbsp;0</code></li>
+      <h3 style="margin-bottom:4px; font-size:0.95em;">What Happens</h3>
+      <ul style="font-size:0.65em; line-height:1.45; margin-top:0;">
+        <li><code>printAllDistances()</code> is <strong>debug-only</strong>, gated behind <code>-amdgpu-next-use-analysis-dump-distance</code></li>
+        <li>Bypasses <code>getUses()</code> &rarr; sends <strong>all</strong> uses (incl. unreachable) to <code>getNextUseDistance()</code></li>
+        <li>Unreachable uses &rarr; <code>assert(Dst&nbsp;!=&nbsp;max())</code> in <code>calcShortestDistance()</code></li>
+        <li>Backward same-block uses &rarr; <code>assert(D&nbsp;&gt;=&nbsp;0)</code> in <code>calcDistanceToUse()</code></li>
       </ul>
-      <h3 style="margin-top:10px; margin-bottom:4px;">Scope</h3>
-      <table class="data-table" style="font-size:0.78em; width:100%;">
+      <h3 style="margin-top:6px; margin-bottom:4px; font-size:0.95em;">Scope</h3>
+      <table class="data-table" style="font-size:0.68em; width:100%;">
         <tr style="background:#e8e8e8;"><th>Code Path</th><th>Affected?</th></tr>
         <tr><td>Normal spiller operation</td><td style="color:#2E7D32;"><strong>No</strong> &mdash; <code>getUses()</code> filters</td></tr>
         <tr><td><code>-dump-distance</code> flag</td><td style="color:#C62828;"><strong>Yes</strong> &mdash; bypasses <code>getUses()</code></td></tr>
         <tr><td><code>-dump-distance-as-json</code></td><td style="color:#2E7D32;"><strong>No</strong> &mdash; uses <code>computeLiveRegUses()</code></td></tr>
       </table>
-      <div class="note-box" style="margin-top:10px; font-size:0.78em;">
-        <strong>ML NUA:</strong> No equivalent issue &mdash; analysis is precomputed during <code>analyze()</code>; queries are simple table lookups with no path-finding.
+      <div class="note-box" style="margin-top:6px; font-size:0.68em; padding:8px;">
+        <strong>ML NUA:</strong> No equivalent issue &mdash; precomputed analysis; queries are table lookups, no path-finding.
       </div>
     </div>
   </div>
-  <div class="slide-note">
-    These asserts fire only when <code>-amdgpu-next-use-analysis-dump-distance</code> is enabled. The normal spiller path through <code>computeLiveRegUses()</code> &rarr; <code>getUses()</code> correctly pre-filters unreachable and backward uses.
-    <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1043-L1066" target="_blank">Source &rarr;</a>
+  <div class="slide-note" style="margin-top:4px;">
+    Asserts fire only with <code>-amdgpu-next-use-analysis-dump-distance</code>. Normal spiller path through <code>computeLiveRegUses()</code> &rarr; <code>getUses()</code> pre-filters correctly.
   </div>
 </section>
 
