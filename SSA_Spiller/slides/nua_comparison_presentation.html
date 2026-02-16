@@ -339,7 +339,7 @@
     </tr>
   </table>
   <div class="slide-note" style="margin-top:8px;">
-    9/20 tests with loops crash Graphics NUA (not shown). ML NUA: <strong>0 crashes</strong> across all tests.
+    Graphics NUA debug dump path (<code>printAllDistances</code>) has assertion issues with unfiltered uses; normal spiller path is protected.
   </div>
 </section>
 
@@ -415,9 +415,9 @@
         &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L565-L593" target="_blank" style="color:#C62828;"><strong>calcIsReachable()</strong></a> <span style="color:#C62828;">L565 &mdash; <strong>BFS</strong> O(V+E)</span>
       </div>
       <div class="verdict-box" style="margin-top:10px; font-size:0.78em; padding:10px;">
-        Per query: Dijkstra O(V&middot;log&nbsp;V) + ~V &times; BFS O(V+E)<br>
-        = <strong>O(V &times; (V+E))</strong> per query<br>
-        &times; Q queries &rarr; <strong style="color:#C62828;">O(Q &times; V &times; (V+E))</strong> total
+        <strong>Worst case</strong> (cold cache): Dijkstra O(V&middot;log&nbsp;V) + ~V &times; BFS O(V+E) = <strong>O(V &times; (V+E))</strong><br>
+        <span style="color:#1565C0;">Results cached per (From,&thinsp;To) pair &mdash; cache hit = O(1)</span><br>
+        Amortized total: <strong style="color:#C62828;">O(P &times; V&middot;log&nbsp;V)</strong> where P&nbsp;=&nbsp;unique block pairs queried
       </div>
     </div>
     <div style="flex:1;">
@@ -451,101 +451,57 @@ bool calcIsReachable(const MBB *From,
   </div>
 </section>
 
-<!-- Slide: Bug 1 — Loop Crash (9/20 LIT Tests) -->
+<!-- Slide: Debug Dump Path Issues -->
 <section style="overflow:hidden;">
-  <h2>Bug 1: Loop Crash &mdash; 9/20 LIT Tests Fail</h2>
+  <h2>Debug Dump Path: Unfiltered Use Lists</h2>
   <div style="display:flex; gap:12px; align-items:flex-start;">
     <div style="flex:1;">
-      <h3 style="margin-bottom:6px; color:#C62828;">Crash Site</h3>
-      <pre style="font-size:0.55em; background:#fff5f5; border:1px solid #ef9a9a; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1033-L1034" target="_blank">calcDistanceToUse() L1033-1034</a>
-// fallthrough: no special case matched
-
-double D = calcShortestDistance(&amp;CurMI, UseMI);
-<span style="background:#ffcdd2; font-weight:bold;">assert(D >= 0);  // FIRES HERE</span></pre>
-      <h3 style="margin-top:8px; margin-bottom:4px; color:#FF8F00;">The Guard That Fails</h3>
-      <pre style="font-size:0.55em; background:#fff8e1; border:1px solid #ffe082; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1020-L1021" target="_blank">calcDistanceToUse() L1020-1021</a>
-if (UseLoop &amp;&amp; CurMBB == UseMBB
-    &amp;&amp; <span style="background:#fff3cd; font-weight:bold;">!instrsAreInOrder(&amp;CurMI, UseMI)</span>
-    &amp;&amp; !UseMI-&gt;isPHI()) {
-  // handles next-iteration case...
-}
-// But: does NOT cover cross-BB loop cases
-// &rarr; falls through to L1033</pre>
+      <h3 style="margin-bottom:6px; color:#FF8F00;">The Unprotected Path</h3>
+      <pre style="font-size:0.55em; background:#fff8e1; border:1px solid #ffe082; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1050-L1060" target="_blank">printAllDistances()</a>
+// Collects ALL uses &mdash; no filtering!
+SmallVector&lt;const MachineOperand *&gt; Uses;
+for (auto &amp;UseMO : MRI-&gt;use_nodbg_operands(DefReg))
+  Uses.push_back(&amp;UseMO);
+return <span style="background:#fff3cd;">getNextUseDistance(DefReg, DefMI, Uses)</span>;
+// &uarr; bypasses getUses() &rarr; unreachable &amp; backward
+//   uses reach calcDistanceToUse() unfiltered</pre>
+      <h3 style="margin-top:10px; margin-bottom:4px; color:#2E7D32;">The Normal (Safe) Path</h3>
+      <pre style="font-size:0.55em; background:#f1f8e9; border:1px solid #a5d6a7; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1131-L1145" target="_blank">computeLiveRegUses()</a> &mdash; spiller entry point
+this-&gt;getUses(Reg, LaneMask, MI, Uses); // &larr; filters!
+// GFX: <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L279-L283" target="_blank">isDistanceFinite()</a> runs Dijkstra &rarr; rejects unreachable
+// ML:  <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L274-L277" target="_blank">isReachable()</a> runs BFS &rarr; rejects unreachable
+Dist = this-&gt;getNextUseDistance(Reg, ..., Uses);
+// &uarr; only reachable uses &rarr; no crash</pre>
     </div>
     <div style="flex:1;">
-      <h3 style="margin-bottom:6px;">Root Cause</h3>
+      <h3 style="margin-bottom:6px;">What Happens</h3>
       <ul style="font-size:0.72em; line-height:1.6;">
-        <li>After replacing <code>DT-&gt;dominates()</code> with <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L288-L305" target="_blank"><code>instrsAreInOrder()</code></a>, certain loop configurations are <strong>not caught</strong> by the guard at L1020</li>
-        <li>When def and use are in <strong>different BBs</strong> within the same loop, execution falls through to L1033</li>
-        <li><code>calcShortestDistance()</code> returns a <strong>negative</strong> distance (use is &ldquo;behind&rdquo; the def in loop iteration order)</li>
-        <li><code>assert(D&nbsp;&gt;=&nbsp;0)</code> fires &rarr; <strong>crash</strong></li>
+        <li><code>printAllDistances()</code> is a <strong>debug-only</strong> function, gated behind <code>-amdgpu-next-use-analysis-dump-distance</code></li>
+        <li>It bypasses <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1069-L1111" target="_blank"><code>getUses()</code></a> and sends <strong>all</strong> register uses (including unreachable ones) to <code>getNextUseDistance()</code></li>
+        <li>Unreachable uses reach <code>calcShortestDistance()</code> which asserts <code>Dst&nbsp;!=&nbsp;max()</code></li>
+        <li>Backward same-block uses reach <code>calcDistanceToUse()</code> which asserts <code>D&nbsp;&gt;=&nbsp;0</code></li>
       </ul>
-      <h3 style="margin-top:8px; margin-bottom:4px;">Impact</h3>
+      <h3 style="margin-top:10px; margin-bottom:4px;">Scope</h3>
       <table class="data-table" style="font-size:0.78em; width:100%;">
-        <tr style="background:#e8e8e8;"><th></th><th>ML NUA</th><th>GFX NUA</th></tr>
-        <tr><td>Crashes</td><td style="color:#2E7D32;"><strong>0 / 20</strong></td><td style="color:#C62828;"><strong>9 / 20</strong></td></tr>
-        <tr><td>All loop tests</td><td style="color:#2E7D32;">Pass</td><td style="color:#C62828;">Crash</td></tr>
-      </table>
-    </div>
-  </div>
-  <div class="slide-note">
-    Regression introduced by <code>instrsAreInOrder()</code> replacing <code>DT-&gt;dominates()</code>. All 9 crashing tests involve loops.
-    <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L975-L1036" target="_blank">Full function source &rarr;</a>
-  </div>
-</section>
-
-<!-- Slide: Bug 2 — Unreachable BB Crash (Blender Kernel) -->
-<section style="overflow:hidden;">
-  <h2>Bug 2: Unreachable BB Crash &mdash; Blender Kernel</h2>
-  <div style="display:flex; gap:12px; align-items:flex-start;">
-    <div style="flex:1;">
-      <h3 style="margin-bottom:6px; color:#C62828;">Fatal Call Stack</h3>
-      <pre style="font-size:0.55em; background:#fff5f5; border:1px solid #ef9a9a; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1033" target="_blank">calcDistanceToUse() L1033</a>
-// fallthrough &mdash; NO reachability check!
-D = calcShortestDistance(&amp;CurMI, UseMI);
-
-// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L685-L688" target="_blank">calcShortestDistance() L685-688</a>
-double Dst = getShortestPath(CurMBB, UseMBB);
-<span style="background:#ffcdd2; font-weight:bold;">assert(Dst != double::max() &amp;&amp;
-  "...non-reachable basic blocks!");</span>
-// FIRES &uarr; when BBs are unreachable
-
-// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L672" target="_blank">calcShortestPath() L672</a>
-// Dijkstra exhausts worklist:
-return std::numeric_limits&lt;double&gt;::max();</pre>
-      <h3 style="margin-top:10px; margin-bottom:6px; color:#FF8F00;">Aggravating Factor</h3>
-      <pre style="font-size:0.55em; background:#fff8e1; border:1px solid #ffe082; border-radius:4px; padding:6px; margin:0; line-height:1.45;">// <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L655-L657" target="_blank">calcShortestPath() L655-657</a>
-if (PI.Backedge)
-  if (<span style="background:#fff3cd; font-weight:bold;">gfxMode()</span>)
-    continue;  // skips backedges!
-// &rarr; blocks reachable only via backedge
-//   become &ldquo;unreachable&rdquo; for Dijkstra</pre>
-    </div>
-    <div style="flex:1;">
-      <h3 style="margin-bottom:6px;">Root Cause</h3>
-      <ul style="font-size:0.72em; line-height:1.6;">
-        <li>After optimizations (phi-elimination), some BBs become <strong>unreachable</strong> from others</li>
-        <li>Dijkstra assumes all BB pairs are connected &mdash; returns <code>double::max()</code> when they&rsquo;re not</li>
-        <li><code>gfxMode()</code> <strong>skips backedges</strong> during Dijkstra &mdash; even more pairs become unreachable</li>
-        <li>Their own guards <strong>exist but are unused</strong> on this path:
-          <br><a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L274-L277" target="_blank"><code>isReachable()</code></a> (L274) and
-          <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L279-L283" target="_blank"><code>isDistanceFinite()</code></a> (L279)</li>
-      </ul>
-      <h3 style="margin-top:8px; margin-bottom:4px;">Manifestation</h3>
-      <table class="data-table" style="font-size:0.78em; width:100%;">
-        <tr style="background:#e8e8e8;"><th>Build</th><th>Behavior</th></tr>
-        <tr><td>Release+Asserts</td><td style="color:#C62828;"><strong>Assertion failure</strong></td></tr>
-        <tr><td>Pure Release</td><td style="color:#C62828;"><strong>Segfault after 86 min</strong> (UB)</td></tr>
+        <tr style="background:#e8e8e8;"><th>Code Path</th><th>Affected?</th></tr>
+        <tr><td>Normal spiller operation</td><td style="color:#2E7D32;"><strong>No</strong> &mdash; <code>getUses()</code> filters</td></tr>
+        <tr><td><code>-dump-distance</code> flag</td><td style="color:#C62828;"><strong>Yes</strong> &mdash; bypasses <code>getUses()</code></td></tr>
+        <tr><td><code>-dump-distance-as-json</code></td><td style="color:#2E7D32;"><strong>No</strong> &mdash; uses <code>computeLiveRegUses()</code></td></tr>
       </table>
       <div class="note-box" style="margin-top:10px; font-size:0.78em;">
-        <strong>ML NUA:</strong> Handles naturally &mdash; unreachable blocks converge to <code>DeadDistance</code>. No path-finding, no BFS, no <code>double::max()</code> sentinels.
+        <strong>ML NUA:</strong> No equivalent issue &mdash; analysis is precomputed during <code>analyze()</code>; queries are simple table lookups with no path-finding.
       </div>
     </div>
   </div>
   <div class="slide-note">
-    Crash on real-world Blender Cycles kernel (309 functions, 84K BBs). Missing reachability guard at <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1033" target="_blank">L1033</a>.
+    These asserts fire only when <code>-amdgpu-next-use-analysis-dump-distance</code> is enabled. The normal spiller path through <code>computeLiveRegUses()</code> &rarr; <code>getUses()</code> correctly pre-filters unreachable and backward uses.
+    <a href="https://github.com/macurtis-amd/llvm-project/blob/a46ffd9/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp#L1043-L1066" target="_blank">Source &rarr;</a>
   </div>
 </section>
+
+<!-- Bug 2 slide removed: the unreachable BB issue shares the same root cause as the
+     debug dump path issue (printAllDistances bypasses getUses filtering).
+     The normal spiller path is protected by isDistanceFinite/isReachable in getUses(). -->
 
 <!-- Technical Summary (moved from Part 4) -->
 <section>
@@ -557,7 +513,7 @@ if (PI.Backedge)
   <table class="comparison-table" style="font-size:0.78em;">
     <tr><th>Criterion</th><th>Evidence</th></tr>
     <tr><td><strong>Architecture</strong></td><td>Classical dataflow with provable convergence vs. demand-driven Dijkstra with 7-level call hierarchy</td></tr>
-    <tr><td><strong>Correctness</strong></td><td>0/20 crashes vs. 9/20 crashes after GFX implementation update; explicit SSA invariant enforcement; unified algorithm with no mode bifurcation</td></tr>
+    <tr><td><strong>Correctness</strong></td><td>Debug dump path (<code>printAllDistances</code>) sends unfiltered uses &mdash; asserts on unreachable/backward uses; normal spiller path is protected by <code>getUses()</code>. Explicit SSA invariant enforcement; unified algorithm with no mode bifurcation</td></tr>
     <tr><td><strong>Performance</strong></td><td>Faster or equal on 10/10 valid tests (1.05&times;&ndash;1.44&times; range); advantage grows with CFG complexity</td></tr>
     <tr><td><strong>Maintainability</strong></td><td>2 pass dependencies vs. 5; single code path vs. gfx/ML bifurcation; comprehensive design docs</td></tr>
     <tr><td><strong>Spiller integration</strong></td><td>Native VRegMaskPair API; O(1) snapshots; lane-sorted subreg queries; precomputed block summaries</td></tr>
@@ -1509,7 +1465,7 @@ if (mlMode()) {
     <div>
       <h3>Impact on Decision</h3>
       <ul>
-        <li><strong>Correctness regression:</strong> 9/20 tests crash after update (was 0/20 before); indicates fragility in case-dispatch distance model</li>
+        <li><strong>Debug path issue:</strong> <code>printAllDistances()</code> bypasses <code>getUses()</code> filtering &mdash; asserts on unreachable/backward uses (debug-dump-only, not production)</li>
         <li><strong>Performance gap unchanged:</strong> ML NUA remains faster on all valid tests (1.05&times;&ndash;1.44&times;)</li>
         <li><strong>Architectural gap unchanged:</strong> No backward dataflow, no per-instruction snapshots, no three-tier ranking, no <code>usedInBlock()</code></li>
         <li><strong>Pass dependency gap unchanged:</strong> 5 passes vs. 2</li>
@@ -1529,7 +1485,7 @@ if (mlMode()) {
     <h2 style="text-align: center; color: var(--neutral-color); margin-bottom:12px;">Final Decision: The ML NUA is the technically stronger implementation</h2>
     <ul style="color: #333; font-size:0.88em; max-width: 85%; margin: 0 auto;">
       <li>Well-structured <strong>dataflow analysis</strong> with clear theoretical foundations, explicit invariants, and subreg-level precision</li>
-      <li><strong>Correctness</strong>: 0/20 test crashes vs. 9/20 after competitor update; regression-free across all loop topologies</li>
+      <li><strong>Correctness</strong>: No equivalent debug-path issues; precomputed analysis avoids runtime path-finding pitfalls; regression-free across all loop topologies</li>
       <li><strong>Unified algorithm</strong>, minimal pass dependencies, integer arithmetic</li>
       <li><strong>Performance</strong>: faster or equal on all valid tests across two benchmark rounds, including after competitor improvements</li>
       <li><strong>Spiller integration</strong>: native VRegMaskPair API, O(1) snapshots, lane-sorted subreg queries</li>

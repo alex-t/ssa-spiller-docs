@@ -935,5 +935,79 @@
   14. Technical Summary
   15. → Part 1 Header
 
+- **Additional fixes (cont'd 4)**
+  - **[BUGFIX]** Fixed code block rendering: removed `<code>` wrapper from new slides' `<pre>` blocks so inline HTML (links, spans) renders properly instead of showing raw tags
+  - **[BUGFIX]** Fixed global `</code></pre>` → `</pre>` replacement that accidentally broke ALL existing `<pre><code class="language-cpp">` blocks (20 instances). Restored closing `</code>` tags for existing slides while keeping new slides' `<pre>` blocks clean.
+  - **[BUGFIX]** Fixed slide overflow: added `overflow:hidden` to 3 new sections, reduced font sizes (0.62em→0.55em), tightened padding/margins/gaps to fit within Reveal.js slide boundaries
+  - **[FEATURE]** Generated PDF: `nua_comparison_presentation.pdf` (927 KB) using `reveal_to_pdf.py` with Playwright headless Chromium
+
+- **Session summary**
+  - Part 0 now has 15 slides (was 10 at start of session): added complexity chart with asymptotes, cache saturation border, Blender kernel benchmark, 3 source-walkthrough slides with GitHub links
+  - Complexity correction documented: ML NUA is O(B) not O(V·(V+E)); x·log(x) > x for all x > e
+  - PDF exported for distribution
+
 - **Next actions**
-  - Review 3 new slides in browser — verify code formatting, links, and layout
+  - Review PDF for print quality (charts, code blocks, links)
+  - Consider if slides 11-13 (source walkthrough + bugs) belong in Part 0 or should move to an appendix for technical audience only
+
+### 2026-02-16 – GFX NUA Complexity Re-analysis: Caching Effects [DESIGN] [NUA]
+
+- **Context / goal**
+  - Re-examine the complexity claim "O(Q × V × (V+E)) total" for the competitor's GFX NUA, accounting for their caching layer
+
+- **Discoveries**
+  - **[DESIGN]** The competitor caches at three levels:
+    1. `getShortestPath(From, To)` — Dijkstra result cached per exact (From, To) pair in `PathInfo.ShortestDistance`. Cache hit = O(1).
+    2. `mutPathInfoFor(From, To)` — `PathInfo` struct (Edge, Backedge, Reachable, LoopWeight, Size) computed once per pair. Cache hit = O(1).
+    3. `getRegisterUses(Reg)` — use-def chain traversed once per register, cached in `RegUseMap`.
+    4. `calcIsReachable` BFS opportunistically checks `Paths` cache for previously computed `(Succ, To)` reachability, enabling early termination.
+  - **[DESIGN]** What is NOT cached:
+    1. Dijkstra intermediate distances: `calcShortestPath(A, B)` internally computes distances to all visited nodes but only stores A→B. Querying A→C later runs Dijkstra from A again.
+    2. BFS intermediate reachability: `calcIsReachable(A, Z)` traversing through B, C, D does not cache (B,Z), (C,Z), (D,Z).
+  - **[DESIGN]** Revised complexity:
+    - Let P = number of unique (From, To) block pairs queried for shortest path
+    - Cold cost: O(P × (V log V + E)) for Dijkstra + O(E × (V+E)) for edge PathInfo BFS population
+    - Warm cost: O(1) per repeated query
+    - Original diagram's "per query" O(V×(V+E)) only applies to cache misses, not steady-state
+    - Original "× Q queries" overestimates because many queries share block pairs → cache hits
+  - **[DESIGN]** Caching is most effective when:
+    - V is small (few basic blocks, typical shaders)
+    - Many registers share the same (DefBlock, UseBlock) pairs (small P)
+    - After warmup phase, queries are essentially free
+  - **[DESIGN]** Caching is least effective when:
+    - Many unique (From, To) pairs (P approaching V²)
+    - Dijkstra doesn't share intermediate results across targets from same source
+
+- **Decisions / rationale**
+  - The original per-query claim of O(V×(V+E)) is a worst-case (cold cache) bound, not the amortized cost
+  - Presentation slide should be updated to say "worst case per query" and note caching reduces practical cost
+  - The fundamental algorithmic difference (on-demand per-query vs. single dataflow pass) remains valid, but the practical gap narrows due to caching
+
+- **Next actions**
+  - Update presentation slide 11 ("Source Code Walkthrough") to add caching nuance
+  - Consider adding a "best case vs worst case" annotation to the complexity box
+
+- **[BUGFIX] Correction: Bug 1 slide terminology and crash mechanism**
+  - **Wrong**: Slide said "when def and use are in different BBs" — `calcDistanceToUse` has no "def", only CurMI (query point) and UseMI (use)
+  - **Wrong**: Slide claimed cross-BB caused `assert(D >= 0)` — cross-block `calcShortestDistance` always returns >= 0 (tailLen + pathDist + headLen). The `D < 0` assert can ONLY fire for same-block backward cases.
+  - **Cross-block failure** would be a different assert inside `calcShortestDistance`: `assert(Dst != max())` when Dijkstra can't find a path (gfxMode skips backedges)
+  - **But**: `getUses()` pre-filters in both modes — GFX uses `isDistanceFinite` (runs Dijkstra), ML uses `isReachable` (BFS). Unreachable uses shouldn't reach `calcDistanceToUse` through normal path.
+  - **Guard at L1020** (`UseLoop && CurMBB == UseMBB && !instrsAreInOrder && !UseMI->isPHI()`) appears to cover same-block backward ML cases correctly
+  - **Confirmed unfiltered path**: `printAllDistances()` bypasses `getUses()` and passes raw `MRI->use_nodbg_operands` directly to `getNextUseDistance()` — this can trigger crashes
+  - **Action**: Need actual crash traces from the 9/20 test failures to determine exact code path and assert. Slide should be corrected or removed until we have evidence.
+
+- **[BUGFIX] Correction: Bug 2 slide — also debug-dump-only**
+  - Bug 2 (unreachable BB crash, `assert(Dst != max())` in `calcShortestDistance`) has the same root cause as Bug 1: only reachable through `printAllDistances()` which bypasses `getUses()` filtering
+  - Normal spiller path: `computeLiveRegUses` → `getUses()` → pre-filters unreachable uses:
+    - GFX: `isDistanceFinite(MBB, UseMBB)` → runs Dijkstra (same one that skips backedges) → returns false for unreachable → filtered
+    - ML: `isReachable(MBB, UseMBB)` → BFS → returns false for truly unreachable → filtered
+  - Slide incorrectly claimed `isReachable()` (L274) and `isDistanceFinite()` (L279) are "unused on this path" — they ARE used, inside `getUses()`, not `calcDistanceToUse()`
+  - `printAllDistances()` is the only caller that collects uses via raw `MRI->use_nodbg_operands()` without `getUses()` filtering, and it's gated behind `-amdgpu-next-use-analysis-dump-distance`
+  - **Both Bug 1 and Bug 2 slides should be removed or relabeled as debug-dump-only issues, not production crashes**
+
+- **[FEATURE] Applied presentation corrections**
+  - **Slide "GFX NUA Complexity: Source Code Walkthrough"**: Updated verdict box — now says "Worst case (cold cache)" with caching note: "Results cached per (From, To) pair — cache hit = O(1). Amortized total: O(P × V·log V) where P = unique block pairs queried"
+  - **Slide "Bug 1: Loop Crash"**: Replaced with merged "Debug Dump Path: Unfiltered Use Lists" slide showing both the unprotected path (`printAllDistances` bypasses `getUses`) and the safe normal path (`computeLiveRegUses` → `getUses` → filtered), with scope table (spiller=No, dump-distance=Yes, dump-json=No)
+  - **Slide "Bug 2: Unreachable BB Crash"**: Removed entirely (merged into the debug dump path slide)
+  - **Technical Summary**: Replaced "0/20 crashes vs. 9/20 crashes" with corrected description noting debug-dump-only issue and `getUses()` protection on normal path
+  - **Additional references**: Updated 3 more locations (benchmark note, GFX update impact slide, final decision slide) that referenced "9/20 crashes"
