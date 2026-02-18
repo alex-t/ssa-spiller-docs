@@ -1011,3 +1011,123 @@
   - **Slide "Bug 2: Unreachable BB Crash"**: Removed entirely (merged into the debug dump path slide)
   - **Technical Summary**: Replaced "0/20 crashes vs. 9/20 crashes" with corrected description noting debug-dump-only issue and `getUses()` protection on normal path
   - **Additional references**: Updated 3 more locations (benchmark note, GFX update impact slide, final decision slide) that referenced "9/20 crashes"
+
+### 2025-02-16 – Memory Consumption Comparison: ML NUA vs GFX NUA [DESIGN] [PERF] [NUA]
+
+- **Context / goal**
+  - Compare memory footprints of ML NUA (ours, precompute-all) vs GFX NUA (competitor, on-demand) to understand trade-offs for the presentation
+
+- **Findings**
+  - **Our dominant cost**: `InstrDist` — one `DenseMap<unsigned, SmallVector<(LaneMask, int64_t), 4>>` per instruction, storing all live VReg distances
+    - Scales as O(I × R): ~128 bytes per (instruction, VReg) entry
+    - For medium function (I=2000, R=60): ~15 MB persistent
+    - For large function (I=10000, R=100): ~122 MB persistent
+  - **Their dominant cost**: `Paths` cache — `DenseMap<(MBB*,MBB*), PathInfo>` caching path results
+    - Scales as O(P) where P ≤ V² unique block pairs; each PathInfo ~56 bytes
+    - Plus `InstrToId`: O(I) — 16 bytes per instruction
+    - For medium function (V=80): ~666 KB total
+    - For large function (V=200): ~4 MB total
+  - **Ratio**: our implementation uses ~18-31× more memory than theirs depending on function size
+  - **Trade-off**: our O(I×R) storage enables O(1) query time; theirs O(I + V²) storage requires O(V log V) Dijkstra + O(V+E) BFS per query (amortized by caching)
+  - **Per-query temporaries**: ours = zero; theirs = O(V) per Dijkstra/BFS call (freed after each call)
+
+- **Optimization opportunity**
+  - Adjacent instructions within a block have nearly identical live sets (only current MI's defs/uses change)
+  - Delta encoding or copy-on-write could reduce InstrDist from O(I × R) to O(I × defs_per_instr) ≈ O(I × 3-5)
+  - This would close the memory gap significantly while retaining O(small) query time
+
+- **Additional notes**
+  - Our VRegDistances uses int64_t (exact); theirs uses double (8-byte, but lossy for large values)
+  - Their `MachineDominatorTree` dependency adds O(V); our `SlotIndexes` adds O(I) — comparable
+  - Their `LiveIntervals` dependency (for JSON dump path only) is O(R × segments) — significant but not used in normal spilling
+  - Our `UsedInBlock` uses dual-storage `VRegMaskPairSet` (DenseMap + vector) — duplicated overhead per block
+
+- **Decisions**
+  - This comparison will be added to the presentation slides as a memory analysis section
+  - Delta encoding optimization is a worthwhile future investigation
+
+### 2026-02-16 – Delta Encoding Implementation [FEATURE] [NUA]
+
+- **Context / goal**
+  - Implement delta encoding for `NextUseResult::InstrDist` to reduce memory from O(I×R) to O(D×R) per block
+  - Following the approved plan in `nua_delta_encoding_bfaffc2f.plan.md`
+
+- **Changes applied**
+  - **[FEATURE]** Replaced `DenseMap<const MachineInstr *, VRegDistances> InstrDist` with per-VReg event lists: `DenseMap<unsigned, SmallVector<VRegEvent, 2>> VRegEvents`
+  - **[FEATURE]** Added `VRegEvent` struct (`{Seq, SortedRecords}`) and `resolveVReg()` helper for O(1) delta lookup
+  - **[FEATURE]** Added `InstrSeq` map (monotonic counter) alongside `InstrOffset` to disambiguate PHI nodes that share the same materialization offset
+  - **[REFACTOR]** Updated `analyze()` backward walk: tracks `TouchedVRegs` per instruction, records events only for changed VRegs
+  - **[REFACTOR]** Updated `getNextUseDistance(MI)`, `getSortedSubregUses(MI)` to use `resolveVReg()` + `InstrSeq`
+  - **[REFACTOR]** Updated `dumpAllNextUseDistances()` to reconstruct per-MI state from events; VRegs now sorted by register number for deterministic output
+  - **[REFACTOR]** Sorted `printVregDistances()` output by VReg number for deterministic Block End Distances
+  - **[TEST]** Regenerated all 17 NUA lit test CHECK lines to match new sorted output format
+  - **[BUGFIX]** Fixed scripts `nua_verifier.py` and `regenerate_nua_checks.py` to use `-amdgpu-next-use-dump-distance` flag instead of `-debug-only=amdgpu-next-use` (lazy analysis doesn't trigger without dump flag)
+
+- **Bugs found & fixed during implementation**
+  - **PHI offset collision**: All PHI nodes share the same `InstrOffset` (no increment for PHIs). With full snapshots each PHI had its own copy; with delta events, later PHIs' cleared-VReg events stomped on earlier PHIs' live state. Fixed by introducing `InstrSeq` (always-incrementing counter) for event ordering, keeping `InstrOffset` solely for materialization.
+  - **VReg print ordering**: `dumpAllNextUseDistances()` iterated `SmallDenseSet<unsigned>` (non-deterministic) instead of old `VRegDistances` DenseMap. FileCheck sequential matching failed on reordered-but-correct output. Fixed by sorting VRegs by register number.
+
+- **Verification**
+  - NUA verifier (Python reference impl): 15/17 pass, 2 `extra_expected` mismatches (pre-existing, not caused by delta encoding)
+  - All 17 lit tests: PASS after CHECK line regeneration
+
+- **Files modified**
+  - `llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.h`: VRegEvent, NextUseInfo, resolveVReg, sorted printVregDistances
+  - `llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp`: analyze(), resolveVReg(), query methods, dump
+  - `llvm/test/CodeGen/AMDGPU/NextUseAnalysis/*.mir`: all 17 test files regenerated
+  - `scripts/nua_verifier.py`, `scripts/regenerate_nua_checks.py`: dump-distance flag fix
+
+- **Next actions**
+  - Run broader AMDGPU tests to check for regressions beyond NUA-specific tests
+  - Profile memory usage on real workloads to measure actual savings
+  - Consider merging `InstrOffset` + `InstrSeq` into a single `DenseMap<MI*, pair<uint,uint>>` if memory profiling shows benefit
+
+### 2026-02-18 – NUA Scaling Benchmarks: Time, Plot, Memory [PERF] [NUA]
+
+- **Context / goal**
+  - Re-run ML vs GFX compile-time and memory benchmarks on synthetic scaling tests after delta-encoding redesign
+  - Document methodology, script paths, and results for reproducibility
+
+- **Scripts and paths**
+  - **Location:** `/work/atimofee/sandbox/github/scripts/`
+  - **Time benchmark:** `run_scaling_benchmark.sh`
+    - Runs on `bench/scale_*.mir` (5–161 BBs). Optional: `--llc-gfx PATH` to compare GFX.
+    - ML: `-run-pass=amdgpu-next-use`. GFX: `-run-pass=amdgpu-next-use-analysis` + `-amdgpu-next-use-analysis-compatibility-mode=machine-learning` + `-amdgpu-next-use-analysis-dump-distance` (dump forces real work; lazy otherwise).
+    - Uses `/usr/bin/time -f "%e"`; capture via `2>&1 | tail -1` (do not use `2>/dev/null` or time's output is lost).
+    - Default: `LLC_ML=/work/atimofee/sandbox/github/llvm-project/build/Debug/bin/llc`, `LLC_GFX=` (empty).
+  - **Memory benchmark:** `run_scaling_memory_benchmark.sh`
+    - Runs on **acyclic** synthetic tests: `bench/acyclic_*.mir` (14–770 BBs).
+    - Peak RSS via `/usr/bin/time -f "%M"` (KB). Capture: full stderr then `tail -1` (time prints after child; do not redirect child's stderr to /dev/null before time or the redirect applies to time and we get 0).
+    - Same ML/GFX pass and flags as time script. Median of N runs. CSV: `filename,num_bbs,num_instrs,file_bytes,ml_peak_rss_kb[,gfx_peak_rss_kb,ratio]`.
+    - Usage: `./run_scaling_memory_benchmark.sh --runs 3 [--llc-gfx PATH]`
+  - **Plot (time vs BBs):** `nua_scaling_plot.html`
+    - Standalone HTML (canvas), no deps. Data: acyclic benchmark (14–770 BBs, ML and GFX times). Serve from `scripts/`: `cd scripts && python3 -m http.server 8766` → open `http://localhost:8766/nua_scaling_plot.html`.
+
+- **Binary paths (Debug vs Debug)**
+  - ML NUA: `/work/atimofee/sandbox/github/llvm-project/build/Debug/bin/llc`
+  - GFX NUA: `/work/atimofee/sandbox/git/llvm-project/build/Debug/bin/llc`
+  - Compare same build type (both Debug or both Release); our Release was older (pre–delta encoding).
+
+- **Time benchmark results (scale_*.mir, median of 3, Debug)**
+  | Test          | BBs | ML (s) | GFX (s) | Ratio (GFX/ML) |
+  | scale_008bb   | 5   | 0.11   | 1.75    | 15.9×          |
+  | scale_016bb   | 11  | 0.11   | 1.74    | 15.8×          |
+  | scale_032bb   | 20  | 0.12   | 1.78    | 14.8×          |
+  | scale_064bb   | 41  | 0.13   | 1.85    | 14.2×          |
+  | scale_128bb   | 80  | 0.16   | 2.23    | 13.9×          |
+  | scale_256bb   | 161 | 0.22   | 2.15    | 9.8×           |
+
+- **Memory benchmark results (acyclic_*.mir, median of 3, Debug, peak RSS KB)**
+  | Test             | BBs | ML (KB)  | GFX (KB) | Ratio (GFX/ML) |
+  | acyclic_016bb   | 14  | 83,320   | 81,512   | 0.98×          |
+  | acyclic_032bb   | 26  | 83,180   | 81,436   | 0.98×          |
+  | acyclic_064bb   | 50  | 83,592   | 81,860   | 0.98×          |
+  | acyclic_128bb   | 98  | 84,584   | 550,120  | **6.50×**      |
+  | acyclic_256bb   | 194 | 85,260   | 550,968  | **6.46×**      |
+  | acyclic_512bb   | 386 | 88,452   | 550,152  | **6.22×**      |
+  | acyclic_1024bb  | 770 | 94,476   | 550,840  | **5.83×**      |
+
+- **Summary**
+  - **Time:** ML ~10–16× faster on scale_*.mir; GFX plateaus ~2 s, ML scales ~0.11–0.22 s.
+  - **Memory:** At small scale (14–50 BBs) ML and GFX similar (~81–84 MB). From 98 BBs onward GFX jumps to ~550 MB; ML stays ~84–94 MB → **~6× less peak RSS** for ML at scale.
+  - Delta-encoding NUA wins on both compile time and memory on these synthetic scaling tests.
