@@ -1131,3 +1131,274 @@
   - **Time:** ML ~10–16× faster on scale_*.mir; GFX plateaus ~2 s, ML scales ~0.11–0.22 s.
   - **Memory:** At small scale (14–50 BBs) ML and GFX similar (~81–84 MB). From 98 BBs onward GFX jumps to ~550 MB; ML stays ~84–94 MB → **~6× less peak RSS** for ML at scale.
   - Delta-encoding NUA wins on both compile time and memory on these synthetic scaling tests.
+
+- **LIT timing table (for slides)** [PERF] [NUA]
+  - Source: `llvm/test/CodeGen/AMDGPU/NextUseAnalysis` (17 tests). Script: `scripts/run_nua_lit_timing.sh --runs 5`. Median of 5 runs, Debug vs Debug. GFX with dump flag. Rows ordered by input MIR size (ascending). Use this table when updating the NUA comparison presentation slides.
+
+  | Test | Size (bytes) | ML (s) | GFX (s) | Ratio (GFX/ML) |
+  |------|--------------|--------|---------|----------------|
+  | three-tier-ranking-nested-loops.mir | 8,571 | 0.10 | 0.11 | 1.10× |
+  | simple-loop-3blocks.mir | 12,816 | 0.11 | 0.12 | 1.09× |
+  | acyclic-phi-merge-distances.mir | 22,038 | 0.11 | 0.12 | 1.09× |
+  | complex-single-loop.mir | 37,585 | 0.11 | 0.12 | 1.09× |
+  | complex-control-flow-11blocks.mir | 41,477 | 0.11 | 0.13 | 1.18× |
+  | two-sequential-loops.mir | 45,766 | 0.11 | 0.13 | 1.18× |
+  | sequence_2_loops.mir | 46,456 | 0.11 | 0.13 | 1.18× |
+  | complex-control-flow-15blocks.mir | 52,097 | 0.12 | 0.14 | 1.17× |
+  | complex-single-loop-a.mir | 58,151 | 0.11 | 0.13 | 1.18× |
+  | triple-nested-loops.mir | 61,241 | 0.12 | 0.13 | 1.08× |
+  | inner_cfg_in_2_nested_loops.mir | 73,249 | 0.12 | 0.13 | 1.08× |
+  | acyclic-cfg-with-self-loop.mir | 90,566 | 0.13 | 0.15 | 1.15× |
+  | nested-loops-with-side-exits-a.mir | 128,163 | 0.13 | 0.16 | 1.23× |
+  | complex-acyclic-cfg-with-4-self-loops.mir | 172,327 | 0.13 | 0.16 | 1.23× |
+  | if_else_with_loops_nested_in_2_outer_loops.mir | 202,752 | 0.13 | 0.17 | 1.31× |
+  | loop_nested_in_3_outer_loops_complex_cfg.mir | 215,901 | 0.13 | 0.16 | 1.23× |
+  | double-nested-loops-complex-cfg.mir | 664,286 | 0.18 | 0.31 | **1.72×** |
+
+- **Scaling benchmark table (for slides)** [PERF] [NUA]
+  - Source: `scripts/bench/scale_*.mir` (6 tests). Script: `scripts/run_scaling_benchmark.sh --runs 5 --llc-gfx PATH`. Median of 5 runs, Debug vs Debug. GFX with dump flag. Rows ordered by input MIR size (ascending). Use when updating the NUA comparison presentation slides.
+
+  | Test | Size (bytes) | BBs | ML (s) | GFX (s) | Ratio (GFX/ML) |
+  |------|--------------|-----|--------|---------|----------------|
+  | scale_005bb.mir | 5,637 | 5 | 0.11 | 0.12 | 1.09× |
+  | scale_011bb.mir | 8,544 | 11 | 0.11 | 0.13 | 1.18× |
+  | scale_020bb.mir | 15,852 | 20 | 0.12 | 0.14 | 1.17× |
+  | scale_041bb.mir | 29,285 | 41 | 0.13 | 0.24 | 1.85× |
+  | scale_080bb.mir | 57,646 | 80 | 0.16 | 2.42 | **15.13×** |
+  | scale_161bb.mir | 113,290 | 161 | 0.22 | 2.29 | **10.41×** |
+
+### 2026-02-18 – NUA Performance Comparison Deck: Full Tables and Charts [FEATURE] [PERF] [NUA]
+
+- **Context / goal**
+  - Fill the short performance comparison deck (`slides/nua_performance_comparison.html`) with full data and the same chart types as the big NUA presentation: full LIT tables, LIT trend plot, synthetic 3-line time chart, GFX complexity chart, memory vs BBs chart.
+
+- **Changes applied**
+  - **LIT timing:** Replaced condensed table with full 17-row table (test, size KB, ML s, GFX s, ratio); scrollable container; `comparison-table` and ML/GFX column styling from big presentation.
+  - **LIT memory:** Replaced bullet summary with full 17-row table (test, size KB, ML MB, GFX MB, ratio); data from LIT memory run (median of 3, peak RSS).
+  - **LIT trend plot:** New slide with canvas `chart-lit-trend`. X = input size (KB), Y = time delta (GFX − ML) for 17 LIT tests; scatter (blue) + linear trend line (green dashed). Redraw on Reveal slide change.
+  - **Synthetic timing chart:** New slide with canvas `chart-scaling`. Same style as big presentation: ML time (blue circles), GFX time (red squares), gap (green dashed triangles, right axis) vs BBs; acyclic data (7 points: 14–770 BBs).
+  - **GFX complexity chart:** New slide with canvas `chart-complexity`. GFX wall-clock (red squares + line), O(n·log n) and O(n²) reference curves (scaled), vertical line at 98 BBs “cache saturation”; same data and coefficients as big presentation.
+  - **Memory vs BBs chart:** New slide with canvas `chart-memory`. ML and GFX peak RSS (MB) vs BBs for acyclic 7 points; ML blue circles, GFX red squares; Y axis 0–600 MB.
+
+- **Technical**
+  - Chart drawing logic and styles (colors, padding, axes, legends) copied from `nua_comparison_presentation.html`; data updated to current LIT and acyclic benchmark results. All charts use `setTimeout` + `Reveal.on('slidechanged', drawFn)` so they render correctly when the slide is shown.
+  - File: `ssa-spiller-docs/SSA_Spiller/slides/nua_performance_comparison.html`.
+
+- **Next actions**
+  - Serve from `slides/` and spot-check all slides and charts in browser.
+
+### 2026-02-18 – Added Complexity Analysis Slides to Short Deck [FEATURE] [NUA]
+
+- **Context / goal**
+  - User requested copying the complexity analysis slides from the big presentation (`nua_comparison_presentation.html`) into the short deck (`nua_performance_comparison.html`).
+
+- **Changes applied**
+  - **"Two Algorithms, One Problem"** slide: Side-by-side ML vs GFX algorithm descriptions with bullet-point characteristics, plus a complexity summary table (precomputation, per-spill-point, total over S spill points).
+  - **"Why On-Demand Loses at Spill Points"** slide: Visual comparison of per-spill-decision cost (128–512 ops for ML vs 1M–1.75M ops for GFX, ~3000× difference), with scenario table (4 waves/EU, 1 wave/EU, repeated spill points).
+  - Both slides inserted between "Benchmarking Methodology" (slide 2) and "Bottom Line" (previously slide 3, now slide 5).
+
+- **Reordered (same session)**
+  - Moved both complexity slides to after "Why: in brief" (slide 14) and before "Takeaway", so the narrative flows: data → high-level why → detailed complexity analysis → takeaway.
+  - Rephrased "Pre-computed snapshot at every instruction" → "Incremental events vector — stores only changed registers per instruction" to reflect the delta-based Events design (no full snapshots stored).
+
+### 2026-02-18 – bigSSA.mir Stress Test Re-run [PERF] [NUA]
+
+- **Context / goal**
+  - Re-run the Blender Cycles GPU kernel (`bigSSA.mir`) stress test to get updated numbers.
+  - Same setup as Feb 10: Release-with-asserts, `gfx1030`, dump flag, output to `/dev/null`.
+
+- **ML NUA result (new)**
+  ```
+  time llc -march=amdgcn -mcpu=gfx1030 -run-pass=amdgpu-next-use -amdgpu-next-use-dump-distance -o /dev/null bigSSA.mir 2>/dev/null
+  real    16m21.117s
+  user    14m28.092s
+  sys     1m52.089s
+  ```
+
+- **Comparison with Feb 10**
+
+  | Metric | ML (Feb 10) | ML (Feb 18) | Change |
+  |--------|-------------|-------------|--------|
+  | Wall time | 21m 22.9s | **16m 21.1s** | **-23.4%** |
+  | User time | 19m 24.6s | 14m 28.1s | -25.5% |
+  | Sys time | 1m 57.8s | 1m 52.1s | -4.9% |
+
+- **Slides update**
+  - Added "Real-World Stress Test: Blender Cycles GPU Kernel" slide to short deck, with input stats (236 MB, 309 functions, 83K BBs, 1.9M instructions) and updated ML wall time (16m 21s). GFX columns marked TBD pending run completion.
+
+- **Methodology slide update**
+  - Added "Implementations under test" with PR links: ML NUA = PR #156079 (eager dataflow), GFX NUA = PR #178873 (on-demand Dijkstra+BFS).
+  - Added Blender stress test description to "What we ran" section.
+  - Tightened font sizes to fit the additional content.
+
+- **LIT timing table update**
+  - Sorted 17 tests by file size ascending (8.6 KB → 664.3 KB) instead of alphabetical.
+  - Added "Size" column. Bumped font from 0.38em to 0.42em for readability.
+
+- **GFX NUA result**
+  ```
+  time llc -march=amdgcn -mcpu=gfx1030 -run-pass=amdgpu-next-use-analysis -amdgpu-next-use-analysis-dump-distance -o /dev/null bigSSA.mir 2>/dev/null
+  Segmentation fault (core dumped)
+  real    92m41.911s
+  user    92m18.365s
+  sys     0m13.262s
+  ```
+
+- **Head-to-head (Feb 18)**
+
+  | Metric | ML NUA (ours) | GFX NUA (theirs) |
+  |--------|---------------|------------------|
+  | Wall time | **16m 21s** | 92m 42s (crashed) |
+  | Exit code | **0 (success)** | 139 (SIGSEGV) |
+  | Ratio | — | **5.7× slower** |
+
+- **Comparison with Feb 10 run**
+
+  | | ML (Feb 10) | ML (Feb 18) | GFX (Feb 10) | GFX (Feb 18) |
+  |---|---|---|---|---|
+  | Wall time | 21m 23s | **16m 21s** (-23%) | 86m 02s | 92m 42s (+8%) |
+  | Exit | 0 | 0 | 139 | 139 |
+
+- **Slides update**
+  - Filled in GFX results on the Blender stress test slide: 92m 42s, SIGSEGV, ❌ Crashed.
+  - Verdict: "5.7× faster — and the only one that finishes."
+
+- **Next actions**
+  - Review full deck in browser for final polish.
+
+### 2025-02-23 – NUA Performance & Memory Review [PERF] [NUA]
+
+- **Context / goal**
+  - Systematic code review of `AMDGPUNextUseAnalysis.h/.cpp` + `VRegMaskPair.h`
+    to find compile-time and RSS memory optimization opportunities.
+
+- **Key findings — Compile Time**
+  - **[PERF] CT-1 (Critical/Trivial):** `operator==(const VRegDistances Other)` takes arg **by value** — copies entire DenseMap on every convergence check.
+  - **[PERF] CT-2 (Critical/Easy):** `get()` returns `SortedRecords` by value — copies SmallVector in inner loop of `operator==`.
+  - **[PERF] CT-3 (Critical/Medium):** `Prev = PrevIt->second` deep-copies VRegDistances every block every iteration just for convergence checking.
+  - **[PERF] CT-4 (Critical/Trivial):** `UpwardNextUses.contains(SuccNum)` + `UpwardNextUses[SuccNum]` = double DenseMap lookup.
+  - **[PERF] CT-5 (Critical/Trivial):** `NextUseMap[MBBNum]` not cached — multiple DenseMap lookups per instruction in backward walk.
+  - **[PERF] CT-6 (High/Easy):** `UsedInBlock` recomputed every fixpoint iteration via std::set insert/remove.
+  - **[PERF] CT-7 (High/Easy):** `InstrOffset`/`InstrSeq` recomputed every fixpoint iteration (stable data).
+  - **[PERF] CT-8 (Moderate/Trivial):** `post_order()` recomputed each fixpoint iteration.
+  - **[PERF] CT-9 (Moderate/Trivial):** `SmallDenseSet<unsigned, 8> TouchedVRegs` constructed per MI — hoist + clear.
+  - **[PERF] CT-10 (Moderate/Easy):** `SmallVector<unsigned, 4> ToErase` in hot `insert()` path.
+
+- **Key findings — Memory (RSS)**
+  - **[PERF] M-1 (Critical/Medium):** `VRegMaskPairSet` uses `std::set<LaneBitmask>` — 40-48 bytes heap node per 8-byte value (5-6× overhead).
+  - **[PERF] M-2 (Critical/Medium):** `VRegMaskPairSet` dual storage (DenseMap + std::vector) doubles element cost.
+  - **[PERF] M-3 (High/Easy):** Two separate `DenseMap<MachineInstr*, unsigned>` per block — merge or replace with vector.
+  - **[PERF] M-4 (Moderate/Trivial):** `SmallVector<Record, 4>` in SortedRecords — most VRegs have 1 record; `<,2>` saves 32 bytes per instance.
+  - **[PERF] M-5 (Moderate/Medium):** `VRegEvent` stores full `SortedRecords` copy (~80 bytes inline) per event.
+
+- **Recommended priority**
+  - Quick wins: CT-1, CT-2, CT-4, CT-5 (trivial/easy, high payoff)
+  - Next tier: CT-3, CT-6, CT-7 (some restructuring, big fixpoint loop savings)
+  - Structural: M-1, M-2 (VRegMaskPairSet rewrite), M-3 (InstrOffset/Seq merge)
+
+- **Quick wins applied (same day)**
+  - CT-1: `operator==` by-value → by-ref
+  - CT-2: `get()` returns pointer instead of by-value SortedRecords
+  - CT-4: Double DenseMap lookup → single `find()`
+  - CT-5: Cache `NextUseMap[MBBNum]` as `NextUseInfo &NUI`
+  - CT-9: Hoist `TouchedVRegs` SmallDenseSet outside inner loop
+
+- **M-4 (`SmallVector<,4>` → `<,2>`) attempted and reverted**
+  - Caused regression on parallel benchmark run; reverted and re-tested
+
+- **Benchmark results (CT-1/2/4/5/9 only, sequential, median of 3, Debug)**
+  - Synthetic tests (acyclic 14–770 BBs, withloops 5–161 BBs): **neutral** — all timing and memory numbers match presentation baseline within noise
+  - Blender stress test (Release): 16m20s vs baseline 16m21s — **neutral**
+  - Conclusion: eliminated copies/lookups are too cheap relative to actual analysis work (merge, insert, convergence) to register at current scale
+  - Patch kept as code quality cleanup; no perf impact positive or negative
+
+- **Next steps for actual perf gains**
+  - CT-3: Eliminate `Prev` deep copy (O(live_vregs) per block per iteration)
+  - CT-6: Compute `UsedInBlock` once, not every fixpoint iteration
+  - CT-7: Compute `InstrOffset`/`InstrSeq` once, not every fixpoint iteration
+  - M-1/M-2: Replace `VRegMaskPairSet`'s `std::set<LaneBitmask>` heap nodes
+
+### 2026-02-24 – Cursor SSH Connection Stability Fix [BUGFIX]
+
+- **Context / goal**
+  - Cursor AI agent connections dropping permanently during remote SSH sessions (Windows 11 → Ubuntu 22.04)
+
+- **Diagnosis**
+  - `remoteagent.log` showed **34 reconnections in one day**, drops every 2–12 minutes
+  - **4 extension host restarts** in a single session, with intervals accelerating (3h → 56m → 24m)
+  - SSH keepalive disabled on both server (`ClientAliveInterval 0`) and client (no `~/.ssh/config`)
+  - Stale node binary reference (`6757269...` hash ENOENT) from Cursor version mismatch
+  - Landlock V3 sandbox incompatibility on kernel 5.15 (non-critical)
+
+- **Fixes applied**
+  - **[BUGFIX]** Server: set `ClientAliveInterval 30` in `/etc/ssh/sshd_config`, restarted sshd
+  - **[BUGFIX]** Client (Windows): added `ServerAliveInterval 15` + `ServerAliveCountMax 4` to `~/.ssh/config`
+  - Cursor server processes killed and restarted to resolve stale binary reference
+
+- **Results**
+  - Post-fix session (2026-02-24): **0 reconnections** over 1.5+ hours, single stable extension host
+  - Previous day: 34 reconnections, 4 extension host crashes
+
+- **Root cause**
+  - Without SSH keepalives, intermediate network devices (firewalls/NAT) silently dropped idle TCP connections during AI agent processing pauses
+
+### 2026-02-24 – NUA Timer Profiling Infrastructure [FEATURE] [PERF] [NUA]
+
+- **Context / goal**
+  - Add fine-grained timer instrumentation to measure pure `analyze()` and cumulative query time separately
+  - Two modes: `--timers` (no dump, pure analysis+query) vs dump (existing `-amdgpu-next-use-dump-distance`)
+
+- **Changes applied**
+  - **[REFACTOR]** `analyze()` uses `TimeRegion` RAII wrapper for `AnalyzeTimer`
+  - **[API]** `getNextUseDistance` iterator overload: `MachineBasicBlock::iterator` → `const_iterator`
+  - **[FEATURE]** Added `exerciseQueries()` method — iterates all MBBs/instructions/VRegs, calls `getNextUseDistance` for each
+  - **[FEATURE]** Pass wrapper: when `EnableTimers`, calls `ensureAnalyzed()` then wraps `exerciseQueries()` with `GetDistanceTimer`, then `TG.print()`
+  - **[FEATURE]** Added `GetSortedSubregUsesTimer` static timer (not yet exercised by queries)
+  - Per-call `TimeRegion` removed from `getNextUseDistance`/`getSortedSubregUses` — caused massive syscall overhead (~23M timer start/stop on Blender)
+  - `dumpAllNextUseDistances` unchanged — uses `resolveVReg` + `printSortedRecords` as before
+
+- **Benchmark scripts updated**
+  - All three scripts (`run_blender_nua_benchmark.sh`, `run_scaling_benchmark.sh`, `run_scaling_memory_benchmark.sh`) support `--timers` flag
+  - `--timers`: passes `-amdgpu-next-use-analysis-timers` only (no dump I/O overhead)
+  - No flag: passes `-amdgpu-next-use-dump-distance` (existing behavior)
+
+- **Blender benchmark (Release-with-asserts, 310 kernels, 235MB MIR)**
+  - wall: 40.16s, analyze: 3.60s (8.96%), query: 2.36s (5.88%)
+  - MIR parse/setup: ~34.2s (remainder)
+  - 17 NUA lit tests: all pass
+
+- **Bugs found and fixed during development**
+  - **[BUGFIX]** Per-call `TimeRegion` in `getNextUseDistance`: ~23M calls × 2 syscalls = 62s overhead on Blender
+  - **[BUGFIX]** Timer nesting: `GetDistanceTimer` wrapped `exerciseQueries` including `ensureAnalyzed()` → `analyze()`, double-counting analyze time
+  - **[BUGFIX]** Percentage display: basis points (10000×) shown as percent; fixed to `100 * value / wall`
+  - **[BUGFIX]** `bc` drops leading zero: `0.24%` displayed as `.24%`; switched to `awk "BEGIN {printf \"%.2f\", ...}"`
+  - **[BUGFIX]** `TG.print()` inside `runOnMachineFunction` printed 310 cumulative reports (not per-function: `ResetAfterPrint` defaults to `false`); removed it — LLVM's `TimerGroup` static destructor now prints one aggregate report at process exit
+  - **[BUGFIX]** `--both` mode memory blowup: all stderr (including gigabytes of dump text) captured into bash variable; added `grep -E` pipe to keep only timer lines
+
+- **Per-function timer investigation (resolved)**
+  - Added `-amdgpu-next-use-per-function-timers` flag: prints per-function timer + resets via `TG.print(errs(), /*ResetAfterPrint=*/true)`
+  - Blender per-function results confirm analysis time scales with function size:
+    - 9743 BBs → 0.95s, 6441 BBs → 0.56s, 1280 BBs → 0.11s, 1 BB → 0.00s
+    - Sum of per-function totals (5.99s) matches aggregate (6.05s)
+
+### 2026-02-25 – Competitor NUA Timer Instrumentation [FEATURE] [PERF] [NUA]
+
+- **Context / goal**
+  - Add identical timer instrumentation to the competitor implementation (`/work/atimofee/sandbox/git/llvm-project`) for benchmarking comparison
+
+- **Changes applied** (competitor repo)
+  - **[FEATURE]** Added `-amdgpu-next-use-analysis-timers` and `-amdgpu-next-use-per-function-timers` cl::opts
+  - **[FEATURE]** Added `TimerGroup` + `InitTimer` (wraps `initialize()`) + `QueryTimer` (wraps `exerciseQueries()`)
+  - **[FEATURE]** Added `exerciseQueries()` to `AMDGPUNextUseAnalysisImpl` + forwarding in `AMDGPUNextUseAnalysis`
+    - Iterates all MBBs/instructions/defs, calls `getNextUseDistance(Reg, MI, Uses)` for each def register
+    - Modeled on competitor's own `printAllDistances()` but without printing
+  - **[FEATURE]** Pass wrapper instrumented: `TimeRegion` around `initialize()`, timer-gated query block
+
+- **Timer mapping (ML NUA → GFX NUA)**
+  - `AnalyzeTimer` → `InitTimer` (dataflow / table initialization)
+  - `GetDistanceTimer` → `QueryTimer` (exercising query API)
+  - Same CLI flags for direct comparison
+
+- **[DOC]** Created benchmarking strategy document: `SSA_Spiller/05-Testing/NUA-Benchmarking-Strategy.md`
+  - Motivation (I/O overhead problem), common API, GFX NUA patch, benchmarking procedure
+  - Intended for sharing with management and GFX NUA team
