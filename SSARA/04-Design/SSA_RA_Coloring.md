@@ -292,13 +292,13 @@ flowchart TD
 
     subgraph RA["SSA Register Allocator"]
         RA1["color() — width-descending PEO coloring ✅"]
-        RA2["Operand rewrite: vreg → physreg 📋"]
+        RA2["Operand rewrite: vreg → physreg ✅"]
         RA1 --> RA2
     end
 
     RA --> Destruct
 
-    subgraph Destruct["SSA Destruction 📋"]
+    subgraph Destruct["SSA Destruction ✅"]
         D1["PHI → parallel copies"]
         D2["Permutation decomposition"]
         D1 --> D2
@@ -378,11 +378,15 @@ bb.1:
 | Width-descending PEO coloring | ✅ Implemented |
 | Tied operand handling | ✅ Implemented |
 | Physical live-in tracking | ✅ Implemented |
-| 12 LIT tests (coloring) | ✅ Passing |
-| Operand rewrite (vreg → physreg) | 📋 Not yet |
-| SSA Destruction (PHI lowering) | 📋 Not yet |
-| PHI Coalescing (paper §4.3) | 📋 Not yet |
-| SGPR/AGPR testing | 📋 Not yet |
+| kills-before-defs ordering | ✅ Implemented |
+| Physreg defs/kills in colorByWidth | ✅ Implemented |
+| Operand rewrite (vreg → physreg) | ✅ Implemented |
+| SSA Destruction (PHI lowering) | ✅ Implemented (lowerPHIs + resolvePermutation: scratch / V_SWAP_B32 / XOR) |
+| 25 LIT tests (coloring + destruction + physreg) | ✅ Passing |
+| Pipeline integration (lowerSGPRSpills) | ✅ Accounting done; materialization via SILowerSGPRSpills |
+| Pipeline wiring (-amdgpu-ssa-regalloc) | 🔧 Pending |
+| PHI Coalescing (paper §4.3) | 🔧 Pending |
+| Loop-filter fallback (validateFinalRP) | 🔧 Pending (2 XFAIL tests) |
 
 ---
 
