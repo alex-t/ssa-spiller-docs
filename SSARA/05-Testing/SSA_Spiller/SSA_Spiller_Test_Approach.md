@@ -1,0 +1,7 @@
+- `dom_group_test.md`
+- [How to model dom groups.md](How_to_model_dom_groups.md)
+- [Drawing 2025-12-21 12.05.25.excalidraw](Drawing_2025-12-21_12.05.25.excalidraw.md)
+- `overlap dom group.png`
+- `ssa repair bug negative.png`
+- [test_dom_group_spill](test_dom_group_spill.md)
+- [test_dom_group_spill.pdf](test_dom_group_spill.pdf)

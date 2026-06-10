@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NUA Performance Comparison — ML vs GFX</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/dist/reveal.css"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/dist/theme/white.css"/>
+<style>
+  :root {
+    --ml-color: #1565C0;
+    --gfx-color: #E65100;
+    --good: #2E7D32;
+    --neutral: #37474F;
+  }
+  .reveal { font-size: 28px; }
+  .reveal h1 { font-size: 1.6em; color: var(--neutral); }
+  .reveal h2 { font-size: 1.3em; color: var(--neutral); }
+  .reveal .slides section { text-align: left; }
+  .ml { color: var(--ml-color); font-weight: bold; }
+  .gfx { color: var(--gfx-color); font-weight: bold; }
+  .good { color: var(--good); font-weight: bold; }
+  .reveal ul { font-size: 0.9em; }
+  .reveal li { margin-bottom: 8px; }
+  .verdict-box { background: #E8F5E9; border: 2px solid var(--good); border-radius: 8px; padding: 20px; margin: 20px 0; text-align: center; }
+  .big-number { font-size: 1.8em; font-weight: bold; color: var(--good); margin: 8px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.6em; margin-top: 8px; }
+  th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; }
+  th { text-align: left; background: #ECEFF1; }
+  td:first-child { text-align: left; }
+  .ratio-good { background: #E8F5E9; font-weight: bold; }
+  .slide-note { font-size: 0.5em; color: #888; margin-top: 12px; }
+  .two-col { display: flex; gap: 20px; }
+  .two-col > div { flex: 1; }
+  .comparison-table { width: 100%; border-collapse: collapse; font-size: 0.58em; margin-top: 8px; }
+  .comparison-table th, .comparison-table td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; }
+  .comparison-table th { background: #ECEFF1; }
+  .comparison-table .ml-col { background: #E3F2FD; }
+  .comparison-table .gfx-col { background: #FFF3E0; }
+  .comparison-table .ratio-good { background: #E8F5E9; font-weight: bold; }
+  .reveal .comparison-table td { text-align: right; }
+  .reveal .comparison-table td:first-child { text-align: left; max-width: 280px; }
+  .comparison-table.fit-slide { font-size: 0.38em; }
+  .comparison-table.fit-slide th, .comparison-table.fit-slide td { padding: 2px 5px; }
+  canvas.chart { background: #fafafa; border: 1px solid #ddd; border-radius: 4px; display: block; margin: 8px auto; }
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- 1. TITLE -->
+<section data-background-color="#1565C0">
+  <h1 style="color:white; text-align:center;">NUA Performance Comparison</h1>
+  <h2 style="color:#BBDEFB; text-align:center;">ML NUA vs GFX NUA — Benchmark Results</h2>
+  <p style="color:#E3F2FD; text-align:center; margin-top: 32px;">SSA Spiller · February 2026</p>
+</section>
+
+<!-- 2. METHODOLOGY -->
+<section>
+  <h2>Benchmarking methodology</h2>
+  <p style="font-size:0.82em;"><strong>Implementations under test</strong></p>
+  <ul style="font-size:0.75em; margin-bottom:6px;">
+    <li><span class="ml">ML NUA</span> — eager backward dataflow (fixed-point). <a href="https://github.com/llvm/llvm-project/pull/156079" style="color:var(--ml-color);">PR&nbsp;#156079</a></li>
+    <li><span class="gfx">GFX NUA</span> — on-demand Dijkstra + BFS. <a href="https://github.com/llvm/llvm-project/pull/178873" style="color:var(--gfx-color);">PR&nbsp;#178873</a></li>
+  </ul>
+  <p style="font-size:0.82em;"><strong>How we measured</strong></p>
+  <ul style="font-size:0.75em; margin-bottom:6px;">
+    <li><strong>Timing:</strong> <code>/usr/bin/time -f "%e"</code>; <strong>median of 5</strong> (wall-clock s). Output to <code>/dev/null</code>.</li>
+    <li><strong>Memory:</strong> <code>/usr/bin/time -f "%M"</code>; <strong>median of 3</strong> (peak RSS KB &rarr; MB).</li>
+  </ul>
+  <p style="font-size:0.82em;"><strong>What we ran</strong></p>
+  <ul style="font-size:0.75em; margin-bottom:6px;">
+    <li><span class="ml">ML:</span> <code>llc -run-pass=amdgpu-next-use -amdgpu-next-use-dump-distance</code></li>
+    <li><span class="gfx">GFX:</span> <code>llc -run-pass=amdgpu-next-use-analysis -amdgpu-next-use-analysis-dump-distance</code></li>
+    <li><strong>Tests:</strong> 17 LIT tests (<code>gfx1200</code>, Debug); synthetic <code>acyclic_*.mir</code> &amp; <code>withloops_*.mir</code> (<code>gfx1200</code>, Debug).</li>
+    <li><strong>Stress test:</strong> <code>bigSSA.mir</code> — Blender Cycles GPU kernel (236 MB, 83K BBs, 1.9M instrs). <code>gfx1030</code>, Release-with-asserts.</li>
+  </ul>
+  <p class="slide-note">Both sides use dump flag so analysis fully runs (fair comparison).</p>
+</section>
+
+<!-- 3. BOTTOM LINE -->
+<section>
+  <h2>Bottom line</h2>
+  <div class="verdict-box">
+    <p style="margin:0 0 12px; font-size: 1em;"><strong>ML NUA is faster and uses less memory.</strong></p>
+    <ul style="text-align:left; max-width: 90%; margin: 0 auto; list-style: none;">
+      <li class="big-number">1.00× – 1.09× faster on 17 LIT tests</li>
+      <li class="big-number">Up to 12.7× faster on scaling synthetic tests</li>
+      <li class="big-number">~5–6.5× less peak memory at scale (80+ BBs)</li>
+      <li class="big-number">5.7× faster on Blender kernel (83K BBs) — GFX crashes</li>
+    </ul>
+  </div>
+  <p class="slide-note">Debug builds, gfx1200. Both sides use dump flag. Median of 5 runs (timing) or 3 (memory).</p>
+</section>
+
+<!-- 4. TIMING: LIT TESTS (full 17 rows) -->
+<section>
+  <h2>Timing: LIT tests (17 tests, by size)</h2>
+  <p><span class="ml">ML NUA</span> vs <span class="gfx">GFX NUA</span> — median of 5 runs. Ratio = GFX/ML.</p>
+  <table class="comparison-table" style="font-size:0.42em;">
+    <thead><tr><th>Test</th><th>Size</th><th class="ml-col">ML (s)</th><th class="gfx-col">GFX (s)</th><th>Ratio</th></tr></thead>
+    <tbody>
+      <tr><td>three-tier-ranking-nested-loops.mir</td><td>8.6 KB</td><td class="ml-col">0.11</td><td class="gfx-col">0.12</td><td class="ratio-good">1.09×</td></tr>
+      <tr><td>simple-loop-3blocks.mir</td><td>12.8 KB</td><td class="ml-col">0.11</td><td class="gfx-col">0.12</td><td class="ratio-good">1.09×</td></tr>
+      <tr><td>acyclic-phi-merge-distances.mir</td><td>22.0 KB</td><td class="ml-col">0.12</td><td class="gfx-col">0.12</td><td>1.00×</td></tr>
+      <tr><td>complex-single-loop.mir</td><td>37.6 KB</td><td class="ml-col">0.12</td><td class="gfx-col">0.13</td><td class="ratio-good">1.08×</td></tr>
+      <tr><td>complex-control-flow-11blocks.mir</td><td>41.5 KB</td><td class="ml-col">0.12</td><td class="gfx-col">0.13</td><td class="ratio-good">1.08×</td></tr>
+      <tr><td>two-sequential-loops.mir</td><td>45.8 KB</td><td class="ml-col">0.12</td><td class="gfx-col">0.13</td><td class="ratio-good">1.08×</td></tr>
+      <tr><td>sequence_2_loops.mir</td><td>46.5 KB</td><td class="ml-col">0.12</td><td class="gfx-col">0.13</td><td class="ratio-good">1.08×</td></tr>
+      <tr><td>complex-control-flow-15blocks.mir</td><td>52.1 KB</td><td class="ml-col">0.13</td><td class="gfx-col">0.14</td><td class="ratio-good">1.08×</td></tr>
+      <tr><td>complex-single-loop-a.mir</td><td>58.2 KB</td><td class="ml-col">0.13</td><td class="gfx-col">0.13</td><td>1.00×</td></tr>
+      <tr><td>triple-nested-loops.mir</td><td>61.2 KB</td><td class="ml-col">0.13</td><td class="gfx-col">0.13</td><td>1.00×</td></tr>
+      <tr><td>inner_cfg_in_2_nested_loops.mir</td><td>73.2 KB</td><td class="ml-col">0.13</td><td class="gfx-col">0.13</td><td>1.00×</td></tr>
+      <tr><td>acyclic-cfg-with-self-loop.mir</td><td>90.6 KB</td><td class="ml-col">0.14</td><td class="gfx-col">0.15</td><td class="ratio-good">1.07×</td></tr>
+      <tr><td>nested-loops-with-side-exits-a.mir</td><td>128.2 KB</td><td class="ml-col">0.15</td><td class="gfx-col">0.15</td><td>1.00×</td></tr>
+      <tr><td>complex-acyclic-cfg-with-4-self-loops.mir</td><td>172.3 KB</td><td class="ml-col">0.16</td><td class="gfx-col">0.16</td><td>1.00×</td></tr>
+      <tr><td>if_else_with_loops_nested_in_2_outer_loops.mir</td><td>202.8 KB</td><td class="ml-col">0.17</td><td class="gfx-col">0.17</td><td>1.00×</td></tr>
+      <tr><td>loop_nested_in_3_outer_loops_complex_cfg.mir</td><td>215.9 KB</td><td class="ml-col">0.16</td><td class="gfx-col">0.16</td><td>1.00×</td></tr>
+      <tr><td>double-nested-loops-complex-cfg.mir</td><td>664.3 KB</td><td class="ml-col">0.28</td><td class="gfx-col">0.30</td><td class="ratio-good">1.07×</td></tr>
+    </tbody>
+  </table>
+  <p class="slide-note">All 17 tests: ML faster or equal (ratio 1.00× – 1.09×). Small inputs; difference grows at scale.</p>
+</section>
+
+<!-- 5. LIT TREND PLOT -->
+<section>
+  <h2>LIT tests: Time gap vs. input size</h2>
+  <p>Gap = GFX time − ML time (seconds). Larger gap ⇒ we are faster.</p>
+  <canvas id="chart-lit-trend" class="chart" width="800" height="380"></canvas>
+  <p style="font-size:0.78em; margin-top:8px; color:var(--neutral);"><strong>Observation:</strong> the trend is nearly flat &mdash; these LIT tests are too small to reveal the complexity difference. The gap does not clearly grow with input size.</p>
+  <p style="font-size:0.82em; margin-top:4px; color:var(--ml-color);"><strong>Hypothesis:</strong> the gap <em>should</em> grow with input size due to quadratic vs. linear complexity. Does it?</p>
+</section>
+
+<!-- 6. TIMING: ACYCLIC -->
+<section>
+  <h2>Timing: Acyclic synthetic tests</h2>
+  <p><strong>Checking the hypothesis</strong> with larger synthetic CFGs. As BBs grow, <span class="gfx">GFX</span> time explodes; <span class="ml">ML</span> stays low.</p>
+  <table>
+    <thead><tr><th>Test</th><th>BBs</th><th>ML (s)</th><th>GFX (s)</th><th>Ratio</th></tr></thead>
+    <tbody>
+      <tr><td>acyclic_014bb.mir</td><td>14</td><td>0.12</td><td>0.13</td><td class="ratio-good">1.08×</td></tr>
+      <tr><td>acyclic_026bb.mir</td><td>26</td><td>0.13</td><td>0.16</td><td class="ratio-good">1.23×</td></tr>
+      <tr><td>acyclic_050bb.mir</td><td>50</td><td>0.14</td><td>0.30</td><td class="ratio-good">2.14×</td></tr>
+      <tr><td>acyclic_098bb.mir</td><td>98</td><td>0.18</td><td>2.29</td><td class="ratio-good">12.72×</td></tr>
+      <tr><td>acyclic_194bb.mir</td><td>194</td><td>0.26</td><td>2.34</td><td class="ratio-good">9.00×</td></tr>
+      <tr><td>acyclic_386bb.mir</td><td>386</td><td>0.42</td><td>2.44</td><td class="ratio-good">5.81×</td></tr>
+      <tr><td>acyclic_770bb.mir</td><td>770</td><td>0.82</td><td>5.46</td><td class="ratio-good">6.66×</td></tr>
+    </tbody>
+  </table>
+  <p class="slide-note">ML scales ~0.12–0.82 s. GFX jumps to ~2.3 s at 98 BBs, ~5.5 s at 770 BBs.</p>
+</section>
+
+<!-- 7. TIMING: WITHLOOPS -->
+<section>
+  <h2>Timing: With-loops synthetic tests</h2>
+  <p>CFGs with loops. Same pattern: <span class="gfx">GFX</span> collapses at scale.</p>
+  <table>
+    <thead><tr><th>Test</th><th>BBs</th><th>ML (s)</th><th>GFX (s)</th><th>Ratio</th></tr></thead>
+    <tbody>
+      <tr><td>withloops_005bb.mir</td><td>5</td><td>0.11</td><td>0.12</td><td class="ratio-good">1.09×</td></tr>
+      <tr><td>withloops_011bb.mir</td><td>11</td><td>0.12</td><td>0.13</td><td class="ratio-good">1.08×</td></tr>
+      <tr><td>withloops_020bb.mir</td><td>20</td><td>0.13</td><td>0.15</td><td class="ratio-good">1.15×</td></tr>
+      <tr><td>withloops_041bb.mir</td><td>41</td><td>0.15</td><td>0.24</td><td class="ratio-good">1.60×</td></tr>
+      <tr><td>withloops_080bb.mir</td><td>80</td><td>0.20</td><td>2.41</td><td class="ratio-good">12.05×</td></tr>
+      <tr><td>withloops_161bb.mir</td><td>161</td><td>0.28</td><td>2.30</td><td class="ratio-good">8.21×</td></tr>
+    </tbody>
+  </table>
+  <p class="slide-note">ML scales ~0.11–0.28 s. GFX jumps to ~2.4 s from 80 BBs.</p>
+</section>
+
+<!-- 8. ACYCLIC TIMING CHART (3 lines: ML, GFX, delta) -->
+<section>
+  <h2>Acyclic: Time vs. basic blocks</h2>
+  <p><span class="ml">ML</span> time, <span class="gfx">GFX</span> time, and gap (GFX − ML).</p>
+  <canvas id="chart-scaling" class="chart" width="800" height="400"></canvas>
+  <p class="slide-note">7 points (14–770 BBs). Gap uses right axis.</p>
+</section>
+
+<!-- 9. GFX COMPLEXITY CHART -->
+<section>
+  <h2>GFX time vs. O(n²) and O(n·log n)</h2>
+  <p>GFX NUA wall-clock vs. theoretical curves. Vertical line: cache saturation at ~98 BBs.</p>
+  <canvas id="chart-complexity" class="chart" width="800" height="400"></canvas>
+  <p class="slide-note">Acyclic data; reference curves scaled for visual comparison.</p>
+</section>
+
+<!-- 10. MEMORY: ACYCLIC -->
+<section>
+  <h2>Memory: Acyclic synthetic tests</h2>
+  <p>At larger scale, <span class="gfx">GFX</span> peak memory jumps; <span class="ml">ML</span> stays flat.</p>
+  <table>
+    <thead><tr><th>Test</th><th>BBs</th><th>ML (MB)</th><th>GFX (MB)</th><th>Ratio</th></tr></thead>
+    <tbody>
+      <tr><td>acyclic_014bb.mir</td><td>14</td><td>81.1</td><td>82.7</td><td>1.02×</td></tr>
+      <tr><td>acyclic_026bb.mir</td><td>26</td><td>81.7</td><td>82.5</td><td>1.01×</td></tr>
+      <tr><td>acyclic_050bb.mir</td><td>50</td><td>82.7</td><td>82.6</td><td>1.00×</td></tr>
+      <tr><td>acyclic_098bb.mir</td><td>98</td><td>84.9</td><td>549.4</td><td class="ratio-good">6.47×</td></tr>
+      <tr><td>acyclic_194bb.mir</td><td>194</td><td>87.4</td><td>549.8</td><td class="ratio-good">6.30×</td></tr>
+      <tr><td>acyclic_386bb.mir</td><td>386</td><td>93.9</td><td>548.4</td><td class="ratio-good">5.84×</td></tr>
+      <tr><td>acyclic_770bb.mir</td><td>770</td><td>106.2</td><td>548.5</td><td class="ratio-good">5.17×</td></tr>
+    </tbody>
+  </table>
+  <p class="slide-note">From 98 BBs: ML ~85–106 MB, GFX ~549 MB → ML uses ~5–6.5× less memory.</p>
+</section>
+
+<!-- 11. MEMORY: WITHLOOPS -->
+<section>
+  <h2>Memory: With-loops synthetic tests</h2>
+  <p>Same pattern with loops: <span class="gfx">GFX</span> memory explodes from 80 BBs.</p>
+  <table>
+    <thead><tr><th>Test</th><th>BBs</th><th>ML (MB)</th><th>GFX (MB)</th><th>Ratio</th></tr></thead>
+    <tbody>
+      <tr><td>withloops_005bb.mir</td><td>5</td><td>81.7</td><td>82.4</td><td>1.01×</td></tr>
+      <tr><td>withloops_011bb.mir</td><td>11</td><td>81.3</td><td>82.6</td><td>1.02×</td></tr>
+      <tr><td>withloops_020bb.mir</td><td>20</td><td>81.2</td><td>82.8</td><td>1.02×</td></tr>
+      <tr><td>withloops_041bb.mir</td><td>41</td><td>82.8</td><td>83.6</td><td>1.01×</td></tr>
+      <tr><td>withloops_080bb.mir</td><td>80</td><td>83.5</td><td>549.4</td><td class="ratio-good">6.58×</td></tr>
+      <tr><td>withloops_161bb.mir</td><td>161</td><td>86.5</td><td>549.1</td><td class="ratio-good">6.34×</td></tr>
+    </tbody>
+  </table>
+  <p class="slide-note">From 80 BBs: ML ~84–87 MB, GFX ~549 MB → ML uses ~6.3–6.6× less memory.</p>
+</section>
+
+<!-- 12. ACYCLIC MEMORY VS BBs CHART -->
+<section>
+  <h2>Peak memory vs. basic blocks (acyclic)</h2>
+  <p><span class="ml">ML</span> vs <span class="gfx">GFX</span> peak RSS (MB). GFX jumps at ~98 BBs.</p>
+  <canvas id="chart-memory-acyclic" class="chart" width="800" height="400"></canvas>
+  <p class="slide-note">Acyclic MIR; 7 points (14–770 BBs).</p>
+</section>
+
+<!-- 13. WITHLOOPS MEMORY VS BBs CHART -->
+<section>
+  <h2>Peak memory vs. basic blocks (with loops)</h2>
+  <p><span class="ml">ML</span> vs <span class="gfx">GFX</span> peak RSS (MB). GFX jumps at ~80 BBs.</p>
+  <canvas id="chart-memory-withloops" class="chart" width="800" height="400"></canvas>
+  <p class="slide-note">With-loops MIR; 6 points (5–161 BBs).</p>
+</section>
+
+<!-- STRESS TEST: BLENDER KERNEL -->
+<section>
+  <h2>Real-World Stress Test: Blender Cycles GPU Kernel</h2>
+  <div style="display:flex; gap:24px; align-items:flex-start;">
+    <div style="flex:1;">
+      <h3 style="margin-bottom:8px; color:var(--ml-color);">Input: <code>bigSSA.mir</code></h3>
+      <table style="font-size:0.78em; width:100%;">
+        <tr><td>Source</td><td><strong>Blender Cycles GPU kernel</strong></td></tr>
+        <tr><td>Dump point</td><td>post phi-elimination</td></tr>
+        <tr><td>File size</td><td>236 MB (~3.5M lines)</td></tr>
+        <tr><td>Functions</td><td><strong>309</strong></td></tr>
+        <tr><td>Basic blocks</td><td><strong>83,629</strong></td></tr>
+        <tr><td>Instructions</td><td><strong>~1.9M</strong></td></tr>
+        <tr><td>Unique vregs</td><td>103,729</td></tr>
+        <tr><td>Largest function</td><td>9,743 BBs</td></tr>
+      </table>
+    </div>
+    <div style="flex:1;">
+      <h3 style="margin-bottom:8px; color:var(--gfx-color);">Results</h3>
+      <table style="font-size:0.78em; width:100%;">
+        <tr style="background:#e8e8e8;"><th></th><th>ML NUA (ours)</th><th>GFX NUA (theirs)</th></tr>
+        <tr><td>Wall time</td><td style="color:var(--ml-color);"><strong>16 min 21s</strong></td><td style="color:var(--gfx-color);"><strong>92 min 42s (crashed)</strong></td></tr>
+        <tr><td>Exit code</td><td style="color:var(--good);"><strong>0 (success)</strong></td><td style="color:var(--gfx-color);"><strong>139 (SIGSEGV)</strong></td></tr>
+        <tr><td>Status</td><td style="color:var(--good);">&#x2705; Correct</td><td style="color:var(--gfx-color);">&#x274C; Crashed</td></tr>
+      </table>
+      <div class="verdict-box" style="margin-top:12px; font-size:0.85em; padding:12px;">
+        <strong>5.7&times; faster &mdash; and the only one that finishes.</strong>
+      </div>
+    </div>
+  </div>
+  <p class="slide-note">
+    Release-with-asserts builds, <code>gfx1030</code>, both with dump flag, output to <code>/dev/null</code>.
+  </p>
+</section>
+
+<!-- WHY: IN BRIEF -->
+<section>
+  <h2>Why: in brief</h2>
+  <ul>
+    <li><span class="ml">ML NUA</span>: <strong>fixed-point dataflow</strong> — one pass over the function; every query is an O(1) lookup into a precomputed snapshot. <strong>Linear</strong> in CFG size.</li>
+    <li><span class="gfx">GFX NUA</span>: <strong>on-demand Dijkstra + BFS</strong> per distance query; cost grows with CFG size and number of queries. <strong>Quadratic</strong> in CFG size.</li>
+  </ul>
+  <div style="margin-top:20px; background:#E8F5E9; border:2px solid var(--good); border-radius:8px; padding:14px 18px;">
+    <ul style="list-style:none; margin:0; padding:0; font-size:0.88em;">
+      <li style="margin-bottom:10px;">⚡ <strong style="color:var(--good);">Faster</strong> — our fixed-point algorithm is <strong>linear</strong>; their Dijkstra is <strong style="color:var(--gfx-color);">quadratic</strong></li>
+      <li>💾 <strong style="color:var(--good);">Less memory</strong> — we store only <strong>per-register deltas</strong>; they build <strong style="color:var(--gfx-color);">full path tables</strong></li>
+    </ul>
+  </div>
+  <p class="slide-note">Full design comparison and technical decision: see main NUA comparison presentation.</p>
+</section>
+
+<!-- TWO ALGORITHMS -->
+<section>
+  <h2>Two Algorithms, One Problem</h2>
+  <div class="two-col" style="gap:14px;">
+    <div style="border:2px solid var(--ml-color); border-radius:8px; padding:10px; background:#E3F2FD;">
+      <h3 style="margin:0 0 4px; color:var(--ml-color); font-weight:bold; font-size:0.85em;">ML NUA &mdash; Eager Dataflow</h3>
+      <ul style="font-size:0.68em; margin:0; line-height:1.5;">
+        <li><strong>Classical backward dataflow</strong> (fixed-point iteration)</li>
+        <li>One upfront pass: O(iter &times; blocks &times; instrs)</li>
+        <li><strong>Incremental events vector</strong> &mdash; stores only changed registers per instruction</li>
+        <li>Query: <strong>O(1)</strong> lookup into snapshot map</li>
+        <li>Integer arithmetic (<code>int64_t</code>), loop-aware tags</li>
+        <li>2 pass dependencies (SlotIndexes, LoopInfo)</li>
+      </ul>
+    </div>
+    <div style="border:2px solid var(--gfx-color); border-radius:8px; padding:10px; background:#FFF3E0;">
+      <h3 style="margin:0 0 4px; color:var(--gfx-color); font-weight:bold; font-size:0.85em;">GFX NUA &mdash; Lazy On-Demand</h3>
+      <ul style="font-size:0.68em; margin:0; line-height:1.5;">
+        <li><strong>On-demand Dijkstra + BFS</strong> per query</li>
+        <li>No upfront cost; computation deferred to query time</li>
+        <li>Per-query: <strong>O(V log V + E)</strong> Dijkstra + BFS</li>
+        <li>7-level call hierarchy per distance request</li>
+        <li>Floating-point (<code>double</code>), 1000<sup>depth</sup> loop encoding</li>
+        <li>5 pass dependencies (+LiveVars, LiveIntervals, DomTree)</li>
+      </ul>
+    </div>
+  </div>
+  <div style="margin-top:8px; border:2px solid #37474F; border-radius:8px; padding:8px 12px; background:#FAFAFA;">
+    <table style="width:100%; font-size:0.62em; border-collapse:collapse;">
+      <tr style="background:#ECEFF1;">
+        <th style="padding:3px 6px; text-align:left;">Total complexity</th>
+        <th style="padding:3px 6px; background:#E3F2FD; color:#1565C0;">ML NUA</th>
+        <th style="padding:3px 6px; background:#FFF3E0; color:#E65100;">GFX NUA</th>
+      </tr>
+      <tr>
+        <td style="padding:3px 6px;">Precomputation</td>
+        <td style="padding:3px 6px; background:#E3F2FD;"><strong>O(iter &times; B &times; I)</strong> &mdash; one pass</td>
+        <td style="padding:3px 6px; background:#FFF3E0;">None (deferred to query time)</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 6px;">Per spill point (Q live regs)</td>
+        <td style="padding:3px 6px; background:#E3F2FD;"><strong>O(Q)</strong></td>
+        <td style="padding:3px 6px; background:#FFF3E0;"><strong>O(Q &times; V &times; (V+E))</strong></td>
+      </tr>
+      <tr style="background:#E8F5E9; font-weight:bold;">
+        <td style="padding:3px 6px;">Total over S spill points</td>
+        <td style="padding:3px 6px;">O(iter&middot;B&middot;I) + S&middot;O(Q)</td>
+        <td style="padding:3px 6px;">S &middot; O(Q&middot;V&middot;(V+E))</td>
+      </tr>
+    </table>
+    <div style="font-size:0.52em; color:#666; margin-top:3px;">
+      B = basic blocks, I = instructions/block, Q = live registers (64&ndash;256 on AMDGPU), S = spill points, V = BBs in CFG, E = CFG edges.
+      Per-query GFX cost: Dijkstra O(V log V) triggers ~V &times; BFS O(V+E) reachability checks.
+    </div>
+  </div>
+</section>
+
+<!-- WHY ON-DEMAND LOSES -->
+<section>
+  <h2>Why On-Demand Loses at Spill Points</h2>
+  <div style="background:#E3F2FD; border-left:4px solid var(--ml-color); padding:8px 12px; font-size:0.82em; margin-bottom:12px;">
+    <strong>At every spill point,</strong> the spiller queries distances for <strong>every live register</strong> to pick the best candidate (Belady&rsquo;s MIN).
+  </div>
+  <div style="display:flex; gap:16px; align-items:center; justify-content:center; margin:16px 0;">
+    <div style="border:3px solid var(--ml-color); border-radius:10px; padding:16px 24px; text-align:center; background:#E3F2FD; min-width:220px;">
+      <div style="font-size:0.7em; color:var(--ml-color); font-weight:bold;">ML NUA</div>
+      <div style="font-size:1.6em; font-weight:bold; color:var(--ml-color);">128 &ndash; 512</div>
+      <div style="font-size:0.7em;">operations per spill decision</div>
+      <div style="font-size:0.65em; color:#666;">64&ndash;256 regs &times; O(1) lookup</div>
+    </div>
+    <div style="font-size:2em; color:var(--neutral);">&laquo;</div>
+    <div style="border:3px solid var(--gfx-color); border-radius:10px; padding:16px 24px; text-align:center; background:#FFF3E0; min-width:220px;">
+      <div style="font-size:0.7em; color:var(--gfx-color); font-weight:bold;">GFX NUA</div>
+      <div style="font-size:1.6em; font-weight:bold; color:var(--gfx-color);">1M &ndash; 1.75M</div>
+      <div style="font-size:0.7em;">operations per spill decision</div>
+      <div style="font-size:0.65em; color:#666;">64&ndash;256 regs &times; Dijkstra+BFS</div>
+    </div>
+  </div>
+  <div style="text-align:center; font-size:1.1em; font-weight:bold; color:var(--good); margin:8px 0;">~3,000&times; fewer operations per spill decision</div>
+  <table class="comparison-table" style="font-size:0.65em; margin-top:10px;">
+    <tr><th>Scenario</th><th>Live Regs</th><th class="ml-col">ML NUA Cost</th><th class="gfx-col">GFX NUA Cost</th></tr>
+    <tr><td><strong>4 waves/EU</strong> (typical)</td><td>~64</td><td class="ml-col">64 &times; 2 = <strong>128 ops</strong></td><td class="gfx-col">~40 &times; 25K = <strong>~1M ops</strong></td></tr>
+    <tr><td><strong>1 wave/EU</strong> (max regs)</td><td>~256</td><td class="ml-col">256 &times; 2 = <strong>512 ops</strong></td><td class="gfx-col">~70 &times; 25K = <strong>~1.75M ops</strong></td></tr>
+    <tr><td><strong>Repeated spill points</strong></td><td>&mdash;</td><td class="ml-col">Still O(1) &mdash; already computed</td><td class="gfx-col">Cache helps same BB pairs; new points &rarr; new Dijkstra</td></tr>
+  </table>
+  <div style="text-align:center; font-size:0.75em; color:var(--neutral); margin-top:8px;">
+    The more registers live at a spill point, the larger ML NUA&rsquo;s advantage.
+  </div>
+</section>
+
+<!-- TAKEAWAY -->
+<section>
+  <h2>Takeaway</h2>
+  <div class="verdict-box">
+    <p style="margin:0; font-size: 1.1em;"><strong>ML NUA is faster and uses less memory</strong> on LIT tests, scaling tests, and at scale.</p>
+    <p style="margin: 16px 0 0;">Recommended for the SSA Spiller pipeline.</p>
+  </div>
+</section>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@4.6.1/plugin/notes/notes.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    transition: 'slide',
+    slideNumber: true,
+    plugins: [ RevealNotes ]
+  });
+</script>
+<script>
+// ===== LIT trend: size (KB) vs time delta (GFX - ML) =====
+(function() {
+  var litTrendData = [
+    {size: 8.6, delta: 0.01}, {size: 12.8, delta: 0.01}, {size: 22.0, delta: 0.00},
+    {size: 37.6, delta: 0.01}, {size: 41.5, delta: 0.01}, {size: 45.8, delta: 0.01},
+    {size: 46.5, delta: 0.01}, {size: 52.1, delta: 0.01}, {size: 58.2, delta: 0.00},
+    {size: 61.2, delta: 0.00}, {size: 73.2, delta: 0.00}, {size: 90.6, delta: 0.01},
+    {size: 128.2, delta: 0.00}, {size: 172.3, delta: 0.00}, {size: 202.8, delta: 0.00},
+    {size: 215.9, delta: 0.00}, {size: 664.3, delta: 0.02}
+  ];
+  function linReg(xs, ys) {
+    var n = xs.length, sx = 0, sy = 0, sxy = 0, sxx = 0;
+    for (var i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxy += xs[i]*ys[i]; sxx += xs[i]*xs[i]; }
+    var m = (n*sxy - sx*sy) / (n*sxx - sx*sx);
+    var b = (sy - m*sx) / n;
+    return {m: m, b: b};
+  }
+  function drawLitTrendChart() {
+    var c = document.getElementById('chart-lit-trend');
+    if (!c) return;
+    var ctx = c.getContext('2d');
+    var W = c.width, H = c.height;
+    var pad = {top: 24, right: 24, bottom: 48, left: 58};
+    var pw = W - pad.left - pad.right, ph = H - pad.top - pad.bottom;
+    var xMax = 700, yMax = 0.04;
+    ctx.fillStyle = '#fafafa';
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+    for (var y = 0; y <= yMax; y += 0.01) {
+      var py = pad.top + ph - (y / yMax) * ph;
+      ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(W - pad.right, py); ctx.stroke();
+    }
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, H - pad.bottom);
+    ctx.lineTo(W - pad.right, H - pad.bottom); ctx.stroke();
+    ctx.fillStyle = '#555'; ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (var y = 0; y <= yMax; y += 0.01) {
+      var py = pad.top + ph - (y / yMax) * ph;
+      ctx.fillText(y.toFixed(2) + 's', pad.left - 6, py);
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (var x = 0; x <= 700; x += 100) {
+      var px = pad.left + (x / xMax) * pw;
+      ctx.fillText(x, px, H - pad.bottom + 6);
+    }
+    ctx.fillStyle = '#333'; ctx.font = 'bold 12px sans-serif';
+    ctx.fillText('Input size (KB)', pad.left + pw/2, H - 4);
+    ctx.save(); ctx.translate(14, pad.top + ph/2); ctx.rotate(-Math.PI/2);
+    ctx.fillStyle = '#555'; ctx.fillText('Time gap GFX \u2212 ML (s)', 0, 0); ctx.restore();
+    function xPx(x) { return pad.left + (x / xMax) * pw; }
+    function yPx(y) { return pad.top + ph - (y / yMax) * ph; }
+    var xs = [], ys = [];
+    for (var i = 0; i < litTrendData.length; i++) {
+      var d = litTrendData[i];
+      var px = xPx(d.size), py = yPx(d.delta);
+      xs.push(d.size); ys.push(d.delta);
+      ctx.fillStyle = '#1565C0';
+      ctx.beginPath(); ctx.arc(px, py, 5, 0, 2*Math.PI); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+    }
+    var reg = linReg(xs, ys);
+    var px0 = xPx(0), py0 = yPx(reg.b), px1 = xPx(xMax), py1 = yPx(reg.m * xMax + reg.b);
+    ctx.strokeStyle = '#2E7D32'; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
+    ctx.beginPath(); ctx.moveTo(px0, py0); ctx.lineTo(px1, py1); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  setTimeout(drawLitTrendChart, 500);
+  if (typeof Reveal !== 'undefined') Reveal.on('slidechanged', drawLitTrendChart);
+})();
+</script>
+<script>
+// ===== Acyclic scaling: ML, GFX, delta vs BBs =====
+(function() {
+  var scalingData = [
+    {bbs: 14, ml: 0.12, gfx: 0.13, delta: 0.01}, {bbs: 26, ml: 0.13, gfx: 0.16, delta: 0.03},
+    {bbs: 50, ml: 0.14, gfx: 0.30, delta: 0.16}, {bbs: 98, ml: 0.18, gfx: 2.29, delta: 2.11},
+    {bbs: 194, ml: 0.26, gfx: 2.34, delta: 2.08}, {bbs: 386, ml: 0.42, gfx: 2.44, delta: 2.02},
+    {bbs: 770, ml: 0.82, gfx: 5.46, delta: 4.64}
+  ];
+  function drawScalingChart() {
+    var c = document.getElementById('chart-scaling');
+    if (!c) return;
+    var ctx = c.getContext('2d');
+    var W = c.width, H = c.height;
+    var pad = {top: 24, right: 70, bottom: 48, left: 60};
+    var pw = W - pad.left - pad.right, ph = H - pad.top - pad.bottom;
+    var xMax = 800, yMaxL = 6.0, yMaxR = 5.0;
+    ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+    for (var y = 0; y <= yMaxL; y += 1) {
+      var py = pad.top + ph - (y / yMaxL) * ph;
+      ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(W - pad.right, py); ctx.stroke();
+    }
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, H - pad.bottom);
+    ctx.lineTo(W - pad.right, H - pad.bottom); ctx.stroke();
+    ctx.fillStyle = '#555'; ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (var y = 0; y <= yMaxL; y += 1) {
+      var py = pad.top + ph - (y / yMaxL) * ph;
+      ctx.fillText(y.toFixed(0) + 's', pad.left - 6, py);
+    }
+    ctx.textAlign = 'left';
+    for (var d = 0; d <= yMaxR; d += 1) {
+      var py = pad.top + ph - (d / yMaxR) * ph;
+      ctx.fillStyle = '#2E7D32'; ctx.fillText(d.toFixed(0) + 's', W - pad.right + 6, py);
+    }
+    ctx.fillStyle = '#555'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    var xTicks = [0, 100, 200, 300, 400, 500, 600, 700, 800];
+    for (var i = 0; i < xTicks.length; i++) {
+      var px = pad.left + (xTicks[i] / xMax) * pw;
+      ctx.fillText(xTicks[i], px, H - pad.bottom + 6);
+    }
+    ctx.fillStyle = '#333'; ctx.font = 'bold 12px sans-serif';
+    ctx.fillText('Number of Basic Blocks', pad.left + pw/2, H - 4);
+    ctx.save(); ctx.translate(14, pad.top + ph/2); ctx.rotate(-Math.PI/2);
+    ctx.fillStyle = '#555'; ctx.fillText('Time (seconds)', 0, 0); ctx.restore();
+    ctx.save(); ctx.translate(W - 6, pad.top + ph/2); ctx.rotate(Math.PI/2);
+    ctx.fillStyle = '#2E7D32'; ctx.fillText('Gap GFX \u2212 ML (seconds)', 0, 0); ctx.restore();
+    function xPx(bbs) { return pad.left + (bbs / xMax) * pw; }
+    function yPxL(sec) { return pad.top + ph - (sec / yMaxL) * ph; }
+    function yPxR(delta) { return pad.top + ph - (delta / yMaxR) * ph; }
+    ctx.strokeStyle = '#1565C0'; ctx.lineWidth = 2.5; ctx.setLineDash([]);
+    ctx.beginPath();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxL(scalingData[i].ml);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxL(scalingData[i].ml);
+      ctx.fillStyle = '#1565C0';
+      ctx.beginPath(); ctx.arc(px, py, 5, 0, 2*Math.PI); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    ctx.strokeStyle = '#C62828'; ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxL(scalingData[i].gfx);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxL(scalingData[i].gfx);
+      ctx.fillStyle = '#C62828';
+      ctx.fillRect(px - 5, py - 5, 10, 10);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(px - 5, py - 5, 10, 10);
+    }
+    ctx.strokeStyle = '#2E7D32'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxR(scalingData[i].delta);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    for (var i = 0; i < scalingData.length; i++) {
+      var px = xPx(scalingData[i].bbs), py = yPxR(scalingData[i].delta);
+      ctx.fillStyle = '#2E7D32';
+      ctx.beginPath();
+      ctx.moveTo(px, py - 6); ctx.lineTo(px - 5, py + 4); ctx.lineTo(px + 5, py + 4);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+    }
+    var lx = pad.left + 16, ly = pad.top + 12;
+    ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#1565C0';
+    ctx.beginPath(); ctx.arc(lx, ly, 4, 0, 2*Math.PI); ctx.fill();
+    ctx.fillStyle = '#333'; ctx.fillText('ML NUA time (left axis)', lx + 12, ly);
+    ly += 20;
+    ctx.fillStyle = '#C62828';
+    ctx.fillRect(lx - 4, ly - 4, 8, 8);
+    ctx.fillStyle = '#333'; ctx.fillText('GFX NUA time (left axis)', lx + 12, ly);
+    ly += 20;
+    ctx.fillStyle = '#2E7D32';
+    ctx.beginPath();
+    ctx.moveTo(lx, ly - 5); ctx.lineTo(lx - 4, ly + 3); ctx.lineTo(lx + 4, ly + 3);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#333'; ctx.fillText('Gap GFX \u2212 ML (right axis)', lx + 12, ly);
+  }
+  setTimeout(drawScalingChart, 600);
+  if (typeof Reveal !== 'undefined') Reveal.on('slidechanged', drawScalingChart);
+})();
+</script>
+<script>
+// ===== GFX complexity: GFX time + O(n^2) + O(n log n) =====
+(function() {
+  var gfxData = [
+    {bbs: 14, gfx: 0.13}, {bbs: 26, gfx: 0.16}, {bbs: 50, gfx: 0.30},
+    {bbs: 98, gfx: 2.29}, {bbs: 194, gfx: 2.34}, {bbs: 386, gfx: 2.44},
+    {bbs: 770, gfx: 5.46}
+  ];
+  function drawComplexityChart() {
+    var c = document.getElementById('chart-complexity');
+    if (!c) return;
+    var ctx = c.getContext('2d');
+    var W = c.width, H = c.height;
+    var pad = {top: 24, right: 30, bottom: 48, left: 60};
+    var pw = W - pad.left - pad.right, ph = H - pad.top - pad.bottom;
+    var xMax = 800, yMax = 6;
+    ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+    for (var y = 0; y <= yMax; y += 1) {
+      var py = pad.top + ph - (y / yMax) * ph;
+      ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(W - pad.right, py); ctx.stroke();
+    }
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, H - pad.bottom);
+    ctx.lineTo(W - pad.right, H - pad.bottom); ctx.stroke();
+    ctx.fillStyle = '#555'; ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (var y = 0; y <= yMax; y += 1) {
+      var py = pad.top + ph - (y / yMax) * ph;
+      ctx.fillText(y.toFixed(0) + 's', pad.left - 6, py);
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    var xTicks = [0, 100, 200, 300, 400, 500, 600, 700, 800];
+    for (var i = 0; i < xTicks.length; i++) {
+      var px = pad.left + (xTicks[i] / xMax) * pw;
+      ctx.fillText(xTicks[i], px, H - pad.bottom + 6);
+    }
+    ctx.fillStyle = '#333'; ctx.font = 'bold 12px sans-serif';
+    ctx.fillText('Number of Basic Blocks (n)', pad.left + pw/2, H - 4);
+    ctx.save(); ctx.translate(14, pad.top + ph/2); ctx.rotate(-Math.PI/2);
+    ctx.fillStyle = '#555'; ctx.fillText('Time (seconds)', 0, 0); ctx.restore();
+    function xPx(v) { return pad.left + (v / xMax) * pw; }
+    function yPx(v) { return pad.top + ph - (Math.min(v, yMax) / yMax) * ph; }
+    var k_nlogn = 8e-4;
+    ctx.strokeStyle = '#FF8F00'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+    ctx.beginPath();
+    for (var x = 10; x <= xMax; x += 2) {
+      var y = k_nlogn * x * Math.log(x);
+      var px = xPx(x), py = yPx(y);
+      if (x === 10) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    var lbl_x = 650, lbl_y = k_nlogn * lbl_x * Math.log(lbl_x);
+    ctx.fillStyle = '#FF8F00'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('O(n\u00b7log n)', xPx(lbl_x) + 6, yPx(lbl_y) + 16);
+    var k_sq = 5e-4;
+    ctx.strokeStyle = '#7B1FA2'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+    ctx.beginPath();
+    for (var x = 10; x <= xMax; x += 2) {
+      var y = k_sq * x * x;
+      if (y > yMax * 1.05) break;
+      var px = xPx(x), py = yPx(y);
+      if (x === 10) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    var lbl2_x = 90, lbl2_y = k_sq * lbl2_x * lbl2_x;
+    ctx.fillStyle = '#7B1FA2'; ctx.fillText('O(n\u00b2)', xPx(lbl2_x) + 6, yPx(lbl2_y) - 14);
+    var cbPx = xPx(98);
+    ctx.strokeStyle = '#666'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.moveTo(cbPx, pad.top); ctx.lineTo(cbPx, H - pad.bottom); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#555'; ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillText('cache saturation', cbPx, pad.top - 2);
+    ctx.strokeStyle = '#C62828'; ctx.lineWidth = 2.5; ctx.setLineDash([]);
+    ctx.beginPath();
+    for (var i = 0; i < gfxData.length; i++) {
+      var px = xPx(gfxData[i].bbs), py = yPx(gfxData[i].gfx);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    for (var i = 0; i < gfxData.length; i++) {
+      var px = xPx(gfxData[i].bbs), py = yPx(gfxData[i].gfx);
+      ctx.fillStyle = '#C62828';
+      ctx.fillRect(px - 5, py - 5, 10, 10);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(px - 5, py - 5, 10, 10);
+    }
+    var lx = pad.left + 20, ly = pad.top + 16;
+    ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#C62828';
+    ctx.fillRect(lx - 4, ly - 4, 8, 8);
+    ctx.fillStyle = '#333'; ctx.fillText('GFX NUA (measured)', lx + 12, ly);
+    ly += 20;
+    ctx.strokeStyle = '#FF8F00'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+    ctx.beginPath(); ctx.moveTo(lx - 8, ly); ctx.lineTo(lx + 8, ly); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#333'; ctx.fillText('O(n\u00b7log n) reference', lx + 12, ly);
+    ly += 20;
+    ctx.strokeStyle = '#7B1FA2'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+    ctx.beginPath(); ctx.moveTo(lx - 8, ly); ctx.lineTo(lx + 8, ly); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#333'; ctx.fillText('O(n\u00b2) reference', lx + 12, ly);
+  }
+  setTimeout(drawComplexityChart, 700);
+  if (typeof Reveal !== 'undefined') Reveal.on('slidechanged', drawComplexityChart);
+})();
+</script>
+<script>
+// ===== Shared memory chart drawing function =====
+function drawMemChart(canvasId, data, xMax) {
+  var c = document.getElementById(canvasId);
+  if (!c) return;
+  var ctx = c.getContext('2d');
+  var W = c.width, H = c.height;
+  var pad = {top: 24, right: 24, bottom: 48, left: 58};
+  var pw = W - pad.left - pad.right, ph = H - pad.top - pad.bottom;
+  var yMax = 600;
+  ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+  for (var y = 0; y <= yMax; y += 100) {
+    var py = pad.top + ph - (y / yMax) * ph;
+    ctx.beginPath(); ctx.moveTo(pad.left, py); ctx.lineTo(W - pad.right, py); ctx.stroke();
+  }
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, H - pad.bottom);
+  ctx.lineTo(W - pad.right, H - pad.bottom); ctx.stroke();
+  ctx.fillStyle = '#555'; ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (var y = 0; y <= 600; y += 100) {
+    var py = pad.top + ph - (y / yMax) * ph;
+    ctx.fillText(y, pad.left - 6, py);
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  var step = xMax <= 200 ? 20 : 100;
+  for (var x = 0; x <= xMax; x += step) {
+    var px = pad.left + (x / xMax) * pw;
+    ctx.fillText(x, px, H - pad.bottom + 6);
+  }
+  ctx.fillStyle = '#333'; ctx.font = 'bold 12px sans-serif';
+  ctx.fillText('Number of Basic Blocks', pad.left + pw/2, H - 4);
+  ctx.save(); ctx.translate(14, pad.top + ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle = '#555'; ctx.fillText('Peak RSS (MB)', 0, 0); ctx.restore();
+  function xPx(v) { return pad.left + (v / xMax) * pw; }
+  function yPx(v) { return pad.top + ph - (v / yMax) * ph; }
+  ctx.strokeStyle = '#1565C0'; ctx.lineWidth = 2.5; ctx.setLineDash([]);
+  ctx.beginPath();
+  for (var i = 0; i < data.length; i++) {
+    var px = xPx(data[i].bbs), py = yPx(data[i].ml);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  for (var i = 0; i < data.length; i++) {
+    var px = xPx(data[i].bbs), py = yPx(data[i].ml);
+    ctx.fillStyle = '#1565C0';
+    ctx.beginPath(); ctx.arc(px, py, 5, 0, 2*Math.PI); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  ctx.strokeStyle = '#C62828'; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (var i = 0; i < data.length; i++) {
+    var px = xPx(data[i].bbs), py = yPx(data[i].gfx);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  for (var i = 0; i < data.length; i++) {
+    var px = xPx(data[i].bbs), py = yPx(data[i].gfx);
+    ctx.fillStyle = '#C62828';
+    ctx.fillRect(px - 5, py - 5, 10, 10);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(px - 5, py - 5, 10, 10);
+  }
+  var lx = pad.left + 16, ly = pad.top + 12;
+  ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  ctx.fillStyle = '#1565C0';
+  ctx.beginPath(); ctx.arc(lx, ly, 4, 0, 2*Math.PI); ctx.fill();
+  ctx.fillStyle = '#333'; ctx.fillText('ML NUA', lx + 12, ly);
+  ly += 20;
+  ctx.fillStyle = '#C62828';
+  ctx.fillRect(lx - 4, ly - 4, 8, 8);
+  ctx.fillStyle = '#333'; ctx.fillText('GFX NUA', lx + 12, ly);
+}
+
+(function() {
+  var acyclicMem = [
+    {bbs: 14, ml: 81.1, gfx: 82.7}, {bbs: 26, ml: 81.7, gfx: 82.5},
+    {bbs: 50, ml: 82.7, gfx: 82.6}, {bbs: 98, ml: 84.9, gfx: 549.4},
+    {bbs: 194, ml: 87.4, gfx: 549.8}, {bbs: 386, ml: 93.9, gfx: 548.4},
+    {bbs: 770, ml: 106.2, gfx: 548.5}
+  ];
+  var withloopsMem = [
+    {bbs: 5, ml: 81.7, gfx: 82.4}, {bbs: 11, ml: 81.3, gfx: 82.6},
+    {bbs: 20, ml: 81.2, gfx: 82.8}, {bbs: 41, ml: 82.8, gfx: 83.6},
+    {bbs: 80, ml: 83.5, gfx: 549.4}, {bbs: 161, ml: 86.5, gfx: 549.1}
+  ];
+  function drawAll() {
+    drawMemChart('chart-memory-acyclic', acyclicMem, 800);
+    drawMemChart('chart-memory-withloops', withloopsMem, 180);
+  }
+  setTimeout(drawAll, 700);
+  if (typeof Reveal !== 'undefined') Reveal.on('slidechanged', drawAll);
+})();
+</script>
+</body>
+</html>
