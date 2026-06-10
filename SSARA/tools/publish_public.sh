@@ -4,7 +4,7 @@
 #
 # USAGE:
 #   cd /path/to/ssa-spiller-docs   # repo root, on branch "work"
-#   ./SSA_Spiller/tools/publish_public.sh [--dry-run] [--no-push]
+#   ./SSARA/tools/publish_public.sh [--dry-run] [--no-push]
 #
 # OPTIONS:
 #   --dry-run    Prepare files but don't commit or push
@@ -40,7 +40,8 @@ WORK_BRANCH="work"
 # Files/folders to include
 INCLUDE_PATHS=(
     "README.md"
-    "SSA_Spiller"
+    "SHARED_CONTEXT.md"
+    "SSARA"
 )
 
 # Patterns to exclude (relative to repo root)
@@ -76,7 +77,7 @@ publish_public.sh - Publish Obsidian docs to GitHub-compatible public branch
 
 USAGE:
     cd /path/to/ssa-spiller-docs     # repo root, on branch "work"
-    ./SSA_Spiller/tools/publish_public.sh [OPTIONS]
+    ./SSARA/tools/publish_public.sh [OPTIONS]
 
 OPTIONS:
     --help       Show this help message and exit
@@ -86,7 +87,7 @@ OPTIONS:
 
 WHAT IT DOES:
     1. Creates a git worktree for "public" branch at ../ssa-spiller-docs-public
-    2. Copies README.md and SSA_Spiller/** (excludes .obsidian, images, 11-Temp, etc.)
+    2. Copies README.md, SHARED_CONTEXT.md and SSARA/** (excludes .obsidian, images, 11-Temp, etc.)
     3. Converts Obsidian wikilinks [[Note]] to GitHub markdown [Note](path.md)
     4. Embeds images ≤300KB as base64; larger images show warning placeholder
     5. Prompts to commit and push to "public" branch
@@ -103,13 +104,13 @@ OUTPUT:
 
 EXAMPLES:
     # Preview what will be published (no changes committed)
-    ./SSA_Spiller/tools/publish_public.sh --dry-run
+    ./SSARA/tools/publish_public.sh --dry-run
 
     # Publish and commit, but don't push (review first)
-    ./SSA_Spiller/tools/publish_public.sh --no-push
+    ./SSARA/tools/publish_public.sh --no-push
 
     # Full publish with interactive push prompt
-    ./SSA_Spiller/tools/publish_public.sh
+    ./SSARA/tools/publish_public.sh
 
 EOF
     exit 0
