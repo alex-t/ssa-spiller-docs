@@ -1,0 +1,119 @@
+diff --git a/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp b/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp
+index 4225b8a72e3b..38095195e53d 100644
+--- a/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp
++++ b/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.cpp
+@@ -15,6 +15,7 @@
+ #include "llvm/IR/ModuleSlotTracker.h"
+ #include "llvm/InitializePasses.h"
+ #include "llvm/Support/FileSystem.h"
++#include "llvm/Support/Timer.h"
+ #include "llvm/Support/ToolOutputFile.h"
+ 
+ #include <cmath>
+@@ -36,6 +37,21 @@ static cl::opt<bool>
+     DumpNextUseDistanceVerbose("amdgpu-next-use-analysis-dump-distance-verbose",
+                                cl::init(false), cl::Hidden);
+ 
++static cl::opt<bool>
++    EnableTimers("amdgpu-next-use-analysis-timers",
++                 cl::desc("Enable timing for Next Use Analysis"),
++                 cl::init(false), cl::Hidden);
++
++static cl::opt<bool>
++    PerFunctionTimers("amdgpu-next-use-per-function-timers",
++                      cl::desc("Print per-function timer breakdown"),
++                      cl::init(false), cl::Hidden);
++
++static TimerGroup TG("AMDGPU Next Use Analysis",
++                      "AMDGPU Next Use Analysis");
++static Timer InitTimer("init", "Time spent in initialize()", TG);
++static Timer QueryTimer("query", "Time spent in exerciseQueries()", TG);
++
+ static cl::opt<AMDGPUNextUseAnalysis::CompatibilityMode> CompatModeOpt(
+     "amdgpu-next-use-analysis-compatibility-mode", cl::Hidden,
+     cl::init(AMDGPUNextUseAnalysis::CompatibilityMode::Graphics),
+@@ -628,6 +644,8 @@ public:
+                SmallVector<const MachineOperand *> &Uses);
+ 
+   void printFurthestDistancesAsJson(raw_ostream &OS, const LiveIntervals *LIS);
++
++  void exerciseQueries();
+ };
+ 
+ void AMDGPUNextUseAnalysisImpl::calcInstrIds(
+@@ -1664,6 +1682,27 @@ void AMDGPUNextUseAnalysisImpl::printFurthestUse(raw_ostream &OS,
+   OS << "      }" << (Last ? "\n" : ",\n");
+ }
+ 
++void AMDGPUNextUseAnalysisImpl::exerciseQueries() {
++  for (const MachineBasicBlock &MBB : *MF) {
++    for (const MachineInstr &MI : MBB) {
++      for (const MachineOperand &MO : MI.operands()) {
++        if (!MO.isReg() || MO.isUse())
++          continue;
++        Register Reg = MO.getReg();
++        if (Reg.isPhysical() || TRI->isAGPR(*MRI, Reg))
++          continue;
++        SmallVector<const MachineOperand *> Uses;
++        for (MachineOperand &UseMO : MRI->use_nodbg_operands(Reg))
++          if (!UseMO.isUndef())
++            Uses.push_back(&UseMO);
++        if (Uses.empty())
++          continue;
++        (void)getNextUseDistance(Reg, MI, Uses);
++      }
++    }
++  }
++}
++
+ void AMDGPUNextUseAnalysisImpl::printFurthestDistancesAsJson(
+     raw_ostream &OS, const LiveIntervals *LIS) {
+   const Function *F = &MF->getFunction();
+@@ -1752,6 +1791,10 @@ void AMDGPUNextUseAnalysis::printFurthestDistancesAsJson(
+   Impl->printFurthestDistancesAsJson(OS, LIS);
+ }
+ 
++void AMDGPUNextUseAnalysis::exerciseQueries() {
++  Impl->exerciseQueries();
++}
++
+ //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ // AMDGPUNextUseAnalysisPass
+ //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+@@ -1762,7 +1805,22 @@ bool AMDGPUNextUseAnalysisPass::runOnMachineFunction(MachineFunction &MF) {
+       &getAnalysis<MachineDominatorTreeWrapperPass>().getDomTree();
+ 
+   NUA = std::make_unique<AMDGPUNextUseAnalysis>();
+-  NUA->initialize(&MF, MLI, DT);
++  {
++    llvm::TimeRegion TR(EnableTimers ? &InitTimer : nullptr);
++    NUA->initialize(&MF, MLI, DT);
++  }
++
++  if (EnableTimers) {
++    {
++      llvm::TimeRegion TR(QueryTimer);
++      NUA->exerciseQueries();
++    }
++    if (PerFunctionTimers) {
++      llvm::errs() << "=== " << MF.getName()
++                    << " (" << MF.size() << " BBs) ===\n";
++      TG.print(llvm::errs(), /*ResetAfterPrint=*/true);
++    }
++  }
+ 
+   if (DumpNextUseDistanceAsJson.getNumOccurrences()) {
+     const LiveIntervals *LIS =
+diff --git a/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.h b/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.h
+index 24fe3a1d7a80..8f1c4bebd4d3 100644
+--- a/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.h
++++ b/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.h
+@@ -60,6 +60,8 @@ public:
+                SmallVector<const MachineOperand *> &Uses);
+ 
+   void printFurthestDistancesAsJson(raw_ostream &OS, const LiveIntervals *LIS);
++
++  void exerciseQueries();
+ };
+ 
+ //------------------------------------------------------------------------------
