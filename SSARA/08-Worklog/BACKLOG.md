@@ -18,7 +18,7 @@ Sources: `NOTES.md`, `SHARED_CONTEXT.md`, `AGENTS.md`, `TODO.md`, `AMDGPUSSARegi
 | Item | Source |
 |------|--------|
 | **Loop filter fallback**: when `ValidCandidates.empty()` after loop filter, pick strategy (invalid candidate + loop-exit sinking, etc.) | `AMDGPUSSARegisterSpiller.cpp` ~632, `NOTES.md` 2026-06-10 |
-| **Partial subreg spill**: when candidate larger than `RemainingToSpill`, find exact sub_mask size instead of spilling whole subreg | cpp ~699 |
+| ~~Partial subreg spill~~ | **Fixed 2026-06-11.** `getVMPsToSpill` now uses `getRegSplitParts` to take only the needed 32-bit parts; `SIInstrInfo::storeRegToStackSlot` now honours `SubRegIdx` in the SGPR path. Single VGPR lane used for partial spills. See NOTES 2026-06-11. |
 | **CFG cache invalidation** if CFG mutates during spill | cpp ~245 `FIXME` |
 | **Correct debug message** for `spillAndReload` when RP > limit | cpp ~781 |
 | **Profitability**: early return when RP > Limit | cpp ~872 |
@@ -40,7 +40,8 @@ Sources: `NOTES.md`, `SHARED_CONTEXT.md`, `AGENTS.md`, `TODO.md`, `AMDGPUSSARegi
 | Item | Source |
 |------|--------|
 | **Pipeline wiring** — `-amdgpu-ssa-regalloc` flag in `addRegAssignAndRewriteOptimized()`: `RebuildSSA → SSA Spiller → SSA RA → SILowerSGPRSpills → (rest)`. `SILowerSGPRSpills` must come immediately after SSA RA (stock ordering). No allocator restructuring needed. | `NOTES.md` 2026-06-08, 2026-06-11 |
-| **End-to-end `.ll` smoke**: `basic-loop.ll`, `spill-cfg-position.ll`, `rewrite-vgpr-mfma-to-agpr-phi.ll` with pipeline flag | `NOTES.md` |
+| **VGPR spill lowering proof** — `SIRegisterInfo::eliminateFrameIndex` handles `SI_SPILL_V*_SAVE/RESTORE` via standard PEI. Requires: physical regs (SSA RA delivers), `ScratchRSrcReg` reserved (SIFrameLowering prologue), frame indices present. **NOT yet empirically verified** — the E2E smoke tests are the proof. | `SIRegisterInfo.cpp:2374` |
+| **End-to-end `.ll` smoke** — `basic-loop.ll`, `spill-cfg-position.ll` (with `amdgpu-num-vgpr` to force VGPR spill), `rewrite-vgpr-mfma-to-agpr-phi.ll` with pipeline flag. These also prove VGPR lowering works. | `NOTES.md` |
 | **`MF.verify()` policy** for RebuildSSA (debug-only vs always) | `NOTES.md` (currently debug-guarded) |
 
 ## Documentation / process

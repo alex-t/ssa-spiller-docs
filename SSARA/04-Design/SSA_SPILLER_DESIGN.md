@@ -202,9 +202,57 @@ flowchart TD
 ```
 
 ## Spill selection (Belady + lane splitting)
-When a candidate register is larger than the remaining "spill budget", the spiller asks NextUseAnalysis for a subreg/lane ordering:
-- API usage: `NU->getSortedSubregUses(...)` in `getVMPsToSpill`
-- Intent: choose the **furthest-used subregister lanes first**, so we spill only as many 32-bit units as needed.
+
+When a candidate register is larger than the remaining "spill budget", the spiller
+selects only the minimum number of 32-bit sub-slots needed.
+
+### Step 1 — NUA-based subreg ordering
+
+`NU->getSortedSubregUses(...)` asks NextUseAnalysis for the per-lane use distances
+of the candidate. This returns only lanes that appear as **distinct-mask uses** in the NUA
+table (sorted furthest-first). If all uses reference the whole register (e.g.
+`S_AND_B64 %w, %w` → mask `0x0F`), the result is a single entry covering all lanes.
+
+### Step 2 — Fit-or-split loop
+
+For each entry returned by NUA:
+
+- If entry size ≤ `RemainingToSpill` → insert into `ToSpill`, decrement remaining.
+- If entry size > `RemainingToSpill` (**"too large" branch**):  
+  Decompose the entry into 32-bit parts using `TRI->getRegSplitParts(SubRC, 4)` and
+  take only as many consecutive parts as `RemainingToSpill` requires. This guarantees
+  exactly the needed number of slots are freed without over-spilling.
+
+### Why NUA alone is insufficient for the "too large" case
+
+NUA records use-site lane masks, not physical sub-register decompositions.
+For a wide register used as a whole (e.g. `%w:sreg_64` always read/written as 64 bits),
+`getSortedSubregUses` returns `[{%w, fullMask}]` — one entry of size 2.
+If only 1 slot is needed, NUA cannot split further.
+`getRegSplitParts` provides the sub-register boundary decomposition independently of NUA,
+ensuring the minimum spill granularity is always 32 bits.
+
+### Sub-register aware emission
+
+When a partial lane mask is selected (e.g. sub0 of `sreg_64`):
+
+- `spillAtDefinition` derives `SubRegIdx` from the lane mask via `VMP.getSubReg(MRI, TRI)`.
+- `SIInstrInfo::storeRegToStackSlot` is called with `SubRegIdx`; it now emits
+  `addReg(SrcReg, kill, SubRegIdx)` so the store pseudo is e.g.
+  `SI_SPILL_S32_SAVE %w.sub0` rather than `SI_SPILL_S64_SAVE %w`.
+- `constrainRegClass` is guarded by `SubRegIdx == 0` (the parent 64-bit vreg must not
+  be constrained to a 32-bit register class).
+- `loadRegFromStackSlot` already handled `SubRegIdx` correctly (unchanged).
+- At the restore site, `MachineLaneSSAUpdater` inserts a `REG_SEQUENCE` to reconstruct
+  the full wide value from the reloaded sub-slot plus the surviving remaining lanes.
+
+### Example: `%w:sreg_64`, `RemainingToSpill = 1`
+
+```
+Before fix:  SI_SPILL_S64_SAVE %w       (2 lanes spilled, 1 VGPR lane wasted)
+After fix:   SI_SPILL_S32_SAVE %w.sub0  (1 lane spilled, sub1 stays live)
+             REG_SEQUENCE at restore: { reload_sub0, %w.sub1 } → full sreg_64
+```
 
 ## Virtual spill point and SI_VIRTUAL_SPILL_MARKER
 
@@ -667,3 +715,12 @@ Key tests for PHI-first strategy:
 ## Appendix A: Historical notes (brief)
 - Older materials in [`06-Research/Archive/`](../06-Research/Archive/) may illustrate earlier variants.
 - The previous "dominated vs reachable" classification was replaced by "kill-dominated vs PIDF-dominated" in January 2026.
+
+## Appendix B: Source files involved in spill emission
+
+| File | Role |
+|------|------|
+| `llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp` | `getVMPsToSpill`, `spillAtDefinition`, `emitReload`, `countSGPRSpillVGPRs` |
+| `llvm/lib/Target/AMDGPU/SIInstrInfo.cpp` | `storeRegToStackSlot` / `loadRegFromStackSlot` — emit `SI_SPILL_*_SAVE/RESTORE` pseudos; SubRegIdx support added 2026-06-11 |
+| `llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp` | `eliminateFrameIndex` — lowers VGPR spill pseudos via PEI; `eliminateSGPRToVGPRSpillFrameIndex` — lowers SGPR pseudos (called by `SILowerSGPRSpills`) |
+| `llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp` | Materialises SGPR spill pseudos to writelane/readlane after SSA RA; runs post-coloring when `SuperReg` is physical |

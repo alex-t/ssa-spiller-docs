@@ -545,8 +545,8 @@ Tests use `IMPLICIT_DEF + COPY` for all incoming values — no physreg live-ins.
 
 | # | Test (planned filename) | What it tests |
 |---|-------------------------|---------------|
-| 1 | `spill-sgpr-linear-basic.mir` | Single 32-bit SGPR spill, linear CFG: `SI_SPILL_S32_SAVE` pseudo in spiller output → `SI_SPILL_S32_TO_VGPR` after lowering |
-| 2 | `spill-sgpr-wide.mir` | 64/128-bit SGPR → N writelane/readlane calls (one per 32-bit sub-slot) |
+| 1 | `spill-sgpr-linear-basic.mir` | ✅ Done. Single 32-bit SGPR, linear CFG. Three-stage pipeline checks pass. |
+| 2 | `spill-sgpr-wide.mir` | ✅ Done. 64-bit SGPR, partial subreg fix: only sub0 spilled, one writelane, REG_SEQUENCE on restore. Also fixed `storeRegToStackSlot` SubRegIdx + `getVMPsToSpill` partial decomposition. |
 | 3 | `spill-sgpr-lane-packing.mir` | Multiple distinct SGPR spills packed into successive lanes of one lane VGPR |
 | 4 | `spill-sgpr-budget-reduction.mir` | `countSGPRSpillVGPRs()` reduces VGPR budget; an additional VGPR spill appears in Pass 2 only because of reduced budget |
 | 5 | `spill-sgpr-implicit-def-linear.mir` | `IMPLICIT_DEF` for lane VGPR precedes first writelane in single-block function |
