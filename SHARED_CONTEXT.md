@@ -1,7 +1,7 @@
 # Shared Context — SSA RA Project
 
 Cross-worktree knowledge base. Updated after significant sessions.
-Last updated: 2026-06-11
+Last updated: 2026-06-18
 
 ## Worktree Layout
 
@@ -62,17 +62,16 @@ Last updated: 2026-06-11
 - End-to-end RA pipeline fully functional (coloring → SSA destruction → operand rewrite)
 - RebuildSSA pass ported and registered (9 fixes applied)
 
-### Pipeline Integration (E2E verified 2026-06-11)
+### Pipeline Integration (COMPLETE, 2026-06-11)
 - AMDGPURebuildSSA ported from PR #156049 into ssara worktree (9 bug fixes applied)
-- `-amdgpu-ssa-regalloc` flag in `addRegAssignAndRewriteOptimized()` replaces greedy
-  path with: RebuildSSA → SSA Spiller → SSA RA → SILowerSGPRSpills → (rest)
+- `-amdgpu-ssa-regalloc` flag wired in `addRegAssignAndRewriteOptimized()`;
+  replaces entire greedy SGPR/WWM/VGPR chain with: RebuildSSA → SSA Spiller → SSA RA
 - Pre-RA sequence unchanged (PHIElim + TwoAddress + RegCoalescer + RenameIndependentSubregs)
 - RebuildSSA is temporary bridge: converts post-PHIElim non-SSA MIR back to SSA
-- Verified 2026-06-11 via:
-  `-run-pass=amdgpu-ssa-register-spiller,amdgpu-ssa-register-allocator,si-lower-sgpr-spills`
-  on gfx1200: SGPR spill pseudo (virtual) → $sgpr0 after RA →
-  SI_SPILL_S32_TO_VGPR + IMPLICIT_DEF after SILowerSGPRSpills. No crash.
-- Full `-amdgpu-ssa-regalloc` flag wire-up and `.ll` smoke tests: pending
+- Three post-RA property fixes in AMDGPUSSARegisterAllocator (we skip VirtRegRewriter):
+  - `finalizeProperties()`: sets NoPHIs + NoVRegs; preserves TracksLiveness
+  - `eliminateRegSequences()`: lowers REG_SEQUENCE pseudos to COPYs or deletes trivial ones
+- Smoke tests pass: basic-loop.ll, spill-cfg-position.ll, rewrite-vgpr-mfma-to-agpr-phi.ll
 
 ### Removed
 - LR splitter removed 2026-05-26. Width-descending coloring already reuses freed slots.
@@ -147,6 +146,71 @@ the component, the idea, and when it might become relevant.
   in [first_writelane, last_readlane], not the entire function. Integrate
   their liveness into LivePhysRP tracking in Pass 2's forward walk for
   tighter budget accounting (Phase 2 of lowerSGPRSpills).
+
+## RebuildSSA → MachineLaneSSAUpdater refactor
+
+### Phase 1: AMDGPURebuildSSA refactor — COMPLETE AND COMMITTED (2026-06-18)
+
+**Bug fixed (Q1)**: inline RebuildSSA left partial wide defs (`undef %r.sub0:vreg_64`) for the
+first subreg def, splitting only re-defs. Result: `%r` is a `vreg_64` carrying ONE live lane;
+RA allocates the full tuple → register-pressure inflation → loop-coloring abort / v128 verifier
+"undefined physical register".
+
+**Implementation** (AMDGPURebuildSSA.cpp):
+- Replaced ~250 lines of inline SSA repair (`buildRealPHI`, `splitNonPhiValue`, `rewriteUses`,
+  `buildRSForSuperUse`, `extendAt`, `reachedByThisVNI`, `operandLaneMask`) with
+  `MachineLaneSSAUpdater::repairSSAForNewDef`.
+- Removed `MachineLoopInfo` dependency; replaced `MachineLoopInfo.h` with `MachineLaneSSAUpdater.h`.
+- New `runOnMachineFunction` loop: find Root (earliest non-PHI VNInfo in dom-preorder), build
+  WorkList of non-Root non-PHI VNInfos sorted dom-preorder + Root appended last, single loop
+  calling `repairSSAForNewDef`. Root handled only if it has a subreg def operand (Q1 fix).
+- LI reference scoped before the repair loop with comment: "repairSSAForNewDef replaces
+  OrigVReg's interval object, invalidating any reference held across calls".
+- `RenumberValues()` removed (updater recomputes via `removeInterval` +
+  `createAndComputeVirtRegInterval`; `shrinkToUses` explicitly avoided for PHI-operand
+  correctness). `MF.verify()` runs in debug builds.
+
+**Validation**: previously XFAIL `pipeline-spill-loop.ll` and `pipeline-wide-v128.ll` both now
+pass. Full SSARA suite 36/36; 78 tests total (36 SSARA + 42 SSASpiller), 0 unexpected failures.
+
+### fixPathologicalPHIs dead-PHI bug — FIXED AND COMMITTED (2026-06-18)
+
+**Context**: `fixPathologicalPHIs` in `AMDGPUSSARegisterSpiller.cpp` finds PHIs still
+referencing spilled vregs and replaces them with `SI_SPILL_V32_RESTORE`. KillMI = the
+`SI_VIRTUAL_SPILL_MARKER` placed at the end of bb.0 (entry). For a loop-invariant spilled
+value, `repairSSAForNewDef` inserts a PHI at loop header (bb.1) but rewrites all dominated
+uses directly to the closer reload def. The PHI result becomes unused.
+
+**Bug**: `fixPathologicalPHIs` unconditionally replaced the unused PHI with
+`SI_SPILL_V32_RESTORE` at the loop header's first non-PHI position. That restore was also
+dead but consumed a VGPR slot, pushing the loop's live count over budget → `color()` abort.
+
+**Fix** (~line 1205 in `AMDGPUSSARegisterSpiller.cpp`): before inserting restore, check
+`MRI->use_nodbg_empty(PHIDest)`. If true, delete PHI silently (no restore inserted), continue.
+
+### Loop spill analysis findings
+
+- `getNumCoveredRegs(LaneBitmask)`: AMDGPU-specific, counts 32-bit VGPR slots. sub0
+  mask=0x3 → 1 slot (lo16=bit0, hi16=bit1 of one VGPR_32). Full vreg_64 mask=0xF → 2 slots.
+- `adjustReloadForLoop`: checks if reload can be hoisted to loop preheader. "Cannot hoist
+  reload to preheader: RP exceeds limit on path" → in-loop reload. In-loop reload does NOT
+  reduce loop peak pressure (the restore adds back the slot it freed).
+- Greedy spills loop-invariant values BEFORE the loop (buffer_store before entry, buffer_load
+  inside loop). Our spiller places the virtual kill point (SI_VIRTUAL_SPILL_MARKER) near the
+  def in bb.0 but actual reload stays in-loop when preheader hoist fails.
+- Loop-filter fallback (`getVMPsToSpill` ~line 623): still open — "pick best invalid candidate
+  and use loop exit sinking".
+
+### Phase status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 0 | Full E2E test batch | COMMITTED (2026-06-18, 05fcd64) |
+| Phase 1 | RebuildSSA → MachineLaneSSAUpdater | COMPLETE AND COMMITTED (2026-06-18) |
+| Phase 2 | Function-wide width-descending RA coloring | NOT STARTED |
+
+**Open work**: PHI coalescer, spiller tied-operand RP fix, loop-filter fallback (`getVMPsToSpill`
+~line 623), reg-unit vs pressure-unit mismatch fix.
 
 ## User Preferences
 - No source changes without APPROVED: line

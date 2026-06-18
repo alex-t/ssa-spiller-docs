@@ -64,7 +64,12 @@
 
 ## Pending
 
-⚠️ Cost model for split vs balanced spill decisions
+⚠️ Loop-aware spilling; spiller tied-operand RP fix
+
+> Note: "split-before-use vs balanced spill" was part of the **old** spill-placement
+> design, rejected in favor of store-at-definition + virtual spill point. Balanced
+> spilling is obsolete and will not be implemented (see
+> `06-Research/Archive/Old_Spill_Placement_Design.md`).
 
 ## Rationale
 

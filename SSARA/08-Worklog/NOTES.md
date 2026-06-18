@@ -1,4 +1,4 @@
-# SSA Register Allocator — Worklog
+ topic on Discourse# SSA Register Allocator — Worklog
 
 ---
 
@@ -393,13 +393,500 @@ Binary confirmed newer than both changed source files (`SIInstrInfo.cpp` 17:18, 
 - Added `08-Worklog/BACKLOG.md` (failing tests, spiller/RA TODOs from NOTES, `SHARED_CONTEXT`, `AGENTS`, in-code FIXME/TODO scan).
 - Added `08-Worklog/FUTURE_IMPROVEMENTS.md` (threshold SGPR lowering, per-site routing, narrow spill-VGPR liveness, bisect script, PHI coalescer, etc.).
 
-## Pending
+---
 
-- **Pipeline wiring** — `-amdgpu-ssa-regalloc` in `addRegAssignAndRewriteOptimized()`:
-  chain `SSA Spiller → SSA RA → SILowerSGPRSpills`. Architecture validated with `-run-pass`
-  chain on gfx1200; ready to wire.
-- **SGPR-lane lowering tests** — tests #1 (`spill-sgpr-linear-basic`) and #2 (`spill-sgpr-wide`) done.
-  Next: #3 lane-packing, #4 budget-reduction, #5–7 IMPLICIT_DEF dominance cases.
+## 2026-06-11 — Full Pipeline Integration: -amdgpu-ssa-regalloc [FEATURE] [SSARA]
+
+- **Context / goal**
+  - Wire complete SSA RA stack into AMDGPU codegen pipeline behind `-amdgpu-ssa-regalloc` flag
+  - Replace greedy SGPR/WWM/VGPR allocator chain with RebuildSSA → Spiller → SSA RA
+
+- **Changes applied**
+  - **[FEATURE]** `AMDGPUTargetMachine.cpp`: added `cl::opt<bool> EnableSSARegAlloc
+    ("amdgpu-ssa-regalloc")` and branch in `addRegAssignAndRewriteOptimized()`
+  - **[BUGFIX]** `destroySSAAndRewrite`: replaced bare `leaveSSA()+invalidateLiveness()`
+    with new `finalizeProperties()` helper — sets `NoPHIs`, `NoVRegs`; drops
+    `invalidateLiveness()` (clearing `TracksLiveness` breaks `MachineLICM`)
+  - **[BUGFIX]** Added `eliminateRegSequences()`: lowers `REG_SEQUENCE` pseudos
+    that survive into post-RA MIR (normally handled by `VirtRegRewriter`).
+    Trivial cases (src already in correct subreg slot) are deleted; non-trivial
+    emit a `COPY` then delete the REG_SEQUENCE.
+
+- **Root causes of the three post-RA failures discovered during smoke testing**
+  1. `MachineCopyPropagation` required `NoVRegs` → set it in `finalizeProperties`
+  2. `BranchFolder` required `NoPHIs` → set it in `finalizeProperties`
+  3. `MachineLICM` called `livein_begin()` asserting `TracksLiveness` → removed
+     the `invalidateLiveness()` call (MBB live-ins are physreg-only, remain valid)
+  4. Assembly printer crashed on `REG_SEQUENCE` pseudo (opcode has no encoding) →
+     `eliminateRegSequences()` lowers them before `finalizeProperties`
+
+- **Smoke test results** (`.ll` → full compilation with `-amdgpu-ssa-regalloc`)
+  - `basic-loop.ll` (loop + PHI, gfx900): PASS
+  - `spill-cfg-position.ll` (diamond + PHI, gfx900): PASS
+  - `rewrite-vgpr-mfma-to-agpr-phi.ll` (diamond + loop, gfx908): PASS
+
+- **Next actions**
+  - More ambitious end-to-end testing on larger kernels
+  - Spiller integration with budget constraints (`amdgpu-num-vgpr`) — force spilling
+  - PHI coalescer (paper §4.3)
+  - Spiller tied-operand RP fix
+
+---
+
+## 2026-06-12 — Correctness Fixes + Test Cleanup [BUGFIX] [SSARA]
+
+- **Context / goal**
+  - Full pipeline working; smoke test the spill path and fix correctness bugs found
+  - Run all SSA RA + spiller + NUA tests and achieve zero unexpected failures
+
+- **Bugs found and fixed in SSA RA** (4 post-RA property / liveness bugs)
+  - `clearVirtRegs()` in `finalizeProperties()`: verifier checks `MRI->getNumVirtRegs() == 0`
+    when `NoVRegs` is set; stale vreg table entries triggered it even with no vreg operands
+  - `addPhysRegLiveIns()`: after rewriting vregs→physregs, MBB live-in sets didn't reflect
+    physreg liveness; post-RA passes (`MachineLICM`) asserted `TracksLiveness`
+  - PHI result live-ins in `lowerPHIs()`: PHI dest LI starts inside block (at PHI def slot),
+    not at BBStart — `addPhysRegLiveIns` missed them; add DstPhys as live-in explicitly
+  - `pickFreePhysReg` cross-width interference: wider vreg W defined AFTER narrower vreg V
+    in same block, both live ranges overlap — `colorByWidth` per-MBB seed missed it
+
+- **Architecture change: color() loop restructured [REFACTOR]**
+  - Previous: outer loop = Width, inner loop = MBB (width-first)
+  - New: outer loop = MBB, inner loop = Width (block-first)
+  - Per-MBB `WiderDefs` accumulator: tiny list `(physreg, &LI)` of assignments made in
+    THIS block by wider passes. `pickFreePhysReg` checks WiderDefs via `LI.overlaps()` — O(k)
+    per def (k = wider defs in block, typically 0–5), not O(|ColorMap|)
+  - `colorByWidth()` eliminated — logic inlined into `color()`
+  - Verified: kernarg segment pointer now correctly gets sgpr4_5 (not overlapping sgpr0_3)
+
+- **Spiller test fixes [TEST]**
+  - 6 AFTER-LOWER tests used `%[[LANE:[0-9]+]]` pattern — doesn't match named vregs like
+    `%s_far`; fixed to `[0-9a-z_]+`
+  - `spill-sgpr-wide` AFTER-RA and AFTER-LOWER had `REG_SEQUENCE` check — our
+    `eliminateRegSequences()` correctly lowers these to COPYs before downstream passes;
+    replaced check with `S_AND_B64` (verifies reconstructed pair is used)
+
+- **E2E spill test (inline)**: diamond kernel with `amdgpu-num-vgpr="2"` through full pipeline
+  - Sees `buffer_store_dword`, `buffer_load_dword`, `NumVgprs: 2`
+  - RebuildSSA → Spiller → SSA RA stack works end-to-end under pressure
+
+- **Test status** (end of day):
+  - 24/24 SSARA, 17/17 NUA, 79/82 SSASpiller (3 XFAIL) — zero unexpected failures
+  - 0 formal e2e LIT tests written yet (all smoke tests done via command line)
+
+- **Next session**
+  - T2c `pipeline-spill-loop.ll`: loop + back-edge + spill — highest priority gap
+  - Start writing formal LIT tests: T1b `pipeline-diamond.ll` first
+  - See plan for full 4-tier test grid
+
+## 2026-06-15 — RebuildSSA mis-attributes post-redef uses [BUGFIX] [REBUILDSSA]
+
+- **Context / goal**
+  - Building e2e loop test (T1c): wanted a scalar loop with NO back-edge copy
+    (kills-before-defs reuse). Every attempt produced a spurious `s_mov` on the
+    back-edge or a redundant latch block.
+
+- **[BUG] `reachedByThisVNI` uses position heuristics, not reaching-def**
+  - For a loop induction var, the non-SSA MIR is:
+    ```
+    bb.1.loop:
+      %22 = S_ADD_I32 %22, step      ; redefines %22
+      S_CMP_LT_U32 %22, n            ; reads the post-add value
+    ```
+  - RebuildSSA processes value numbers: PHI value (id=1) first, then the S_ADD
+    redef (id=2). When rewriting uses of the PHI value, `reachedByThisVNI` decided
+    "does this use read the PHI value?" with:
+    - same block: `DefIdx(PHI) < UseIdx` — pure lexical order
+    - cross block: `MDT->dominates(DefBB, UseBB)` — pure dominance
+  - Both ignore the intervening `S_ADD` redefinition. So the PHI value greedily
+    claimed the `S_CMP` use (and the loop-exit `COPY`), which actually read id=2.
+  - **Symptom**: RebuildSSA emitted `S_CMP %23` (PHI value) instead of `S_CMP %24`
+    (post-add). `%23` then lived past the S_ADD → `%24` could not reuse its
+    physreg → spurious back-edge copy.
+
+- **Root cause confirmed via `-debug-only=amdgpu-rebuild-ssa`** (not guessed):
+  ```
+  [RW] exact -> %23 at S_CMP_LT_U32 %22       ← wrong
+  [RW] exact -> %23 at %21 = COPY %22 (exit)  ← wrong
+  ```
+
+- **[BUGFIX] Query the live interval instead of position**
+  - `AMDGPURebuildSSA.cpp` `reachedByThisVNI`: replaced both heuristics with
+    `LI.getVNInfoBefore(getInstructionIndex(UseMI).getRegSlot()) == VNI`.
+  - The live interval already encodes the exact reaching value at every slot,
+    accounting for redefinitions within a block and across blocks.
+  - `DefMI` parameter no longer needed; call site in `rewriteUses` updated.
+
+- **Verified** (before → after RebuildSSA output, `bb.1.loop`):
+  - `S_CMP_LT_U32 %23` → `S_CMP_LT_U32 %24` (post-add)
+  - exit `COPY %23` → `COPY %24`
+  - Final asm: loop is one tight block `s_add_i32 s4, s4, s3 / s_cmp / s_cbranch`,
+    **no back-edge copy** (was a separate latch with `s_mov`).
+  - No regressions: 79 SSASpiller pass + 3 XFAIL, 24/24 SSARA, 17/17 NUA.
+
+- **Decision / rationale**
+  - Applied the minimal LiveIntervals-query fix to the current inline RebuildSSA.
+  - The deeper fix (def-first renaming via `MachineLaneSSAUpdater`) is the long-planned
+    refactor — added to `FUTURE_IMPROVEMENTS.md`. RebuildSSA is a temporary bridge,
+    so the minimal correct fix is appropriate now.
+
+- **Next actions**
+  - T1c loop e2e test now has a clean copy-free kernel (variable-stride accumulator).
+  - Continue formalizing e2e LIT tests (T1–T4).
+
+## 2026-06-16 — E2E tests + spiller margin fix [WIP — UNCOMMITTED] [SSARA] [SPILLER]
+
+**STATE: uncommitted, NOT green. Do not commit. Recreate from transcript if lost.**
+
+### Done and verified
+- **RebuildSSA reaching-def fix** (`AMDGPURebuildSSA.cpp`): committed already? NO — it is
+  part of today's uncommitted set. `reachedByThisVNI` now uses
+  `LI.getVNInfoBefore(getInstructionIndex(UseMI).getRegSlot()) == VNI`, dropped DefMI param.
+  Verified: loop back-edge copy eliminated; 24/24 SSARA, 17/17 NUA still pass.
+- **2 new e2e LIT tests** (untracked): `SSARA/pipeline-loop.ll` (copy-free scalar loop,
+  guards the RebuildSSA fix) and `SSARA/pipeline-diamond.ll` (WiderDefs kernarg-ptr
+  disjointness + divergent PHI→VGPR; verified it FAILS on buggy clobbered-base output).
+- **New rule** `.cursor/rules/investigate-dont-rationalize.mdc` (alwaysApply): investigate
+  unexpected output, never rationalize/adjust-to-match.
+
+### Spiller margin fix (applied, has fallout)
+- `AMDGPUSSARegisterSpiller.cpp:2532` — changed `(N*9)/10` → `N - N/10` (floor 10% margin).
+  Rationale: old formula rounded the MARGIN UP, cutting 25-50% from small budgets
+  (N=3→limit2). New gives margin 0 for N<10, ~10% for large files. Fixes the
+  `num-vgpr=3` abort (target was infeasible 2).
+- **Fallout**: the entire SSASpiller suite was calibrated to the OLD threshold via its
+  budgets. 35 tests failed + 1 XFAIL→XPASS.
+- **Re-derivation done (budget-preserving procedure, approved)**: for 33 single-budget
+  tests, decremented the budget by exactly 1 (uniform) to restore the OLD effective
+  limit → existing verified CHECKs pass unchanged. Script:
+  `scripts/retune_spiller_budgets.sh`. All 33 pass.
+
+### OPEN — blocking commit
+- **`spill-sgpr-budget-reduction.mir`** (dual budget sgpr=8/vgpr=4): NOT resolved,
+  RESTORED to committed state (clean). Budget-only retune impossible: needs SGPR
+  limit 5 (→ sgpr=7) AND VGPR-initial 3 (→ vgpr=3), but at vgpr=3 the
+  `si-lower-sgpr-spills` WWM allocation fails ("cannot find enough VGPRs for
+  wwm-regalloc") — the WWM lane needs the top VGPR the old margin reserved.
+  This is the test that exposes the KEY DESIGN QUESTION below.
+- **`spill-vreg-many-lanes.mir`**: still failing, not yet investigated (no budget attr).
+- **XPASS `spill-balanced-use-before.mir`**: margin fix may have genuinely fixed it —
+  needs individual check before removing XFAIL.
+
+### KEY DESIGN QUESTION (decide first tomorrow)
+The old `(N*9)/10` margin was **load-bearing**, not just caution: at num-vgpr=4 it
+reserved VGPR3 (limit→3), and `SILowerSGPRSpills` WWM allocation needs exactly that free
+top VGPR to place the SGPR spill lane. My margin fix removed that headroom at small
+budgets → wwm-regalloc has nowhere to go.
+- The spiller does `VGPRLimit -= SpillVGPRsUsed`, but that reduces the spiller's TARGET,
+  not the SSA RA's actual usage — the RA can still color into the top VGPRs.
+- Design decision needed: (a) revisit the margin fix given this WWM-headroom dependency,
+  or (b) make the SSA RA explicitly reserve the SGPR-spill-lane VGPRs (explicit headroom
+  instead of relying on the margin). Per NOTES design: "SSA RA colors bottom-up, top free
+  for SILowerSGPRSpills" — but nothing ENFORCES the top stays free once margin is gone.
+
+### Full-pipeline sanity (answered today)
+`-amdgpu-ssa-regalloc` does NOT run both our + greedy: `addRegAssignAndRewriteOptimized`
+(line 1716) adds only RebuildSSA→Spiller→SSARA and returns. (Note: SILowerSGPRSpills is
+also bypassed in the full pipeline — separate known gap.)
+
+### Resume checklist tomorrow
+1. Decide the margin/WWM-headroom design question above.
+2. Resolve `spill-sgpr-budget-reduction.mir` and `spill-vreg-many-lanes.mir`.
+3. Investigate XPASS `spill-balanced-use-before.mir`.
+4. Full suite green, THEN commit (RebuildSSA fix + margin fix + retunes + 2 e2e tests as
+   separate logical commits).
+
+## 2026-06-16 — PHI lowering: per-cycle register file [BUGFIX] [SSARA]
+
+- **Context / goal**
+  - While investigating the `illegal VGPR to SGPR copy` in `pipeline_loop_exit`
+    (loop-with-break kernel), reviewed `lowerPHIs`/`resolvePermutation` and found the
+    `IsVGPR` flag was a block-wide assumption taken from the *first* PHI's dest class.
+  - Comment "All PHIs in one block share the same register file" is wrong: in the VGPR
+    pass a block can hold both VGPR and SGPR PHIs.
+
+- **Results / discoveries**
+  - **[BUGFIX]** `IsVGPR` is only consumed in Phase 2 (cycle breaking) of
+    `resolvePermutation`: scratch counter/base (`MaxVGPRIdx`/`MaxSGPRIdx`, `VGPR0`/`SGPR0`),
+    HW limit, occupancy model, and `emitSwap` (VGPR-only `V_SWAP_B32`/`V_XOR_B32`).
+    Phase 1 chain copies are file-agnostic plain `COPY`s.
+  - A permutation cycle is always confined to one file (a VGPR dest can never equal an
+    SGPR src), so the file is a property of the cycle, not the block. With the old code a
+    VGPR-first block containing an SGPR cycle would emit wrong-file scratch/swaps →
+    miscompile (latent; needs mixed-file PHIs + a same-file cycle to trigger).
+
+- **Changes applied (APPROVED: per-cycle register file in resolvePermutation)**
+  - Dropped `bool IsVGPR` param from `resolvePermutation` (`.h` + `.cpp`).
+  - `lowerPHIs`: removed the misleading comment + dead `FirstDst`/`IsVGPR`; call updated.
+  - `resolvePermutation` Phase 2: derive `IsVGPR = TRI->isVGPRClass(getPhysRegBaseClass(
+    CycleStart))` per cycle; moved `MaxIdx`/`MaxHWLimit`/`CurrentOcc` inside the loop;
+    removed now-dead `CurrentOcc = ScratchOcc;`.
+
+- **Results / verification**
+  - Rebuilt `llc`; full SSARA suite 27/27 pass.
+  - NOTE: this is a separate fix from the still-pending subreg-on-PHI-source fix; the
+    `illegal copy s[4:5] to s8` in `pipeline_loop_exit` is the subreg bug and remains
+    until that one is applied.
+
+## 2026-06-16 — PHI lowering: subreg on PHI source [BUGFIX] [SSARA]
+
+- **Context / goal**
+  - Root cause of `illegal copy s[4:5] to s8` in `pipeline_loop_exit` (loop-with-break).
+
+- **Results / discoveries**
+  - **[BUGFIX]** PHI source `%63 = PHI %33.sub0, ...` where `%33` → `$sgpr4_sgpr5`. In
+    `lowerPHIs` the copy was built from `ColorMap.lookup(SrcVReg)` (the full tuple),
+    dropping the `.sub0` index → emitted `$sgpr8 = COPY $sgpr4_sgpr5` (64→32, illegal).
+  - `rewriteOperands` already resolved subregs (`TRI->getSubReg`); `lowerPHIs` never did.
+
+- **Changes applied (APPROVED)**
+  - `lowerPHIs`: if the PHI source operand has a subreg index, apply
+    `SrcPhys = TRI->getSubReg(SrcPhys, SubIdx)` before queuing the copy. Source side only —
+    PHI result operands are never subreg defs.
+
+- **Results / verification**
+  - Rebuilt `llc`. Repro now emits `s_mov_b32 s8, s4` (sub0); `-verify-machineinstrs`
+    clean, no `illegal`/`error`. Full SSARA suite 27/27 pass.
+  - Combined with the per-cycle register-file fix earlier today, the T1d loop-exit kernel
+    is now correct end-to-end.
+
+- **[TEST]** Added `SSARA/pipeline-loop-exit.ll` (T1d) guarding both fixes: `CHECK-NOT:
+  illegal copy` catches the subreg regression, `-verify-machineinstrs` adds verifier
+  coverage, structural CHECKs assert loop+exit shape. SSARA suite now 28/28.
+
+## 2026-06-16 — Spiller under-spills at tight budget (RP validation abort) [BUG] [SPILLER]
+
+- **Context / goal**
+  - While prototyping T2a `pipeline-spill-linear.ll` (6 loads, two reductions over all
+    inputs), swept `amdgpu-num-vgpr`. Clean spill at budget 4 (ScratchSize 12). At budget 3
+    the SSA spiller aborts: `FINAL RP VALIDATION FAILED! Current RP: 4, RP Limit: 3` at the
+    4th volatile load `%24 = GLOBAL_LOAD_DWORD_SADDR ... p3` in bb.0.
+
+- **Verification: is 3 feasible? YES.**
+  - Greedy (default pipeline) on the identical kernel: `num-vgpr=3` → succeeds, NumVgprs 3,
+    ScratchSize 16. `num-vgpr=2` → "ran out of registers" (genuinely infeasible).
+  - So **3 is the true minimum and is allocatable**; our spiller is under-spilling.
+
+- **Root-cause hypothesis**
+  - The SADDR offset VGPR `%30 = tid<<2` is shared/live across all six loads (1 permanent).
+    The spiller left `a0,a1,a2` results un-spilled across the 4th load → RP 4. With
+    store-at-definition only the shared address + the new def should be live (RP 2) across a
+    load. The spiller failed to spill the earlier results, then `report_fatal_error`s instead
+    of recovering.
+
+- **Status / decisions**
+  - Real `[BUG] [SPILLER]`, not infeasibility. T2a test will use budget 4 (clean spill) so it
+    is not blocked by this. Investigate the under-spill separately (likely the spill-decision
+    heuristic not accounting for the long-lived shared address / not iterating to the limit).
+
+## 2026-06-16 — Spiller RP metric root cause: during-MI peak vs after-MI [DESIGN] [BUG] [SPILLER]
+
+- **Context / goal**
+  - Deep-dived the `num-vgpr=3` abort on the two-reduction `pipeline-spill-linear` kernel
+    (see prior entry). Repro `/tmp/sl-3.ll`; post-RebuildSSA MIR `/tmp/sl3-rebuilt.mir`.
+    Abort: `FINAL RP VALIDATION FAILED, RP=4, limit=3` at the p3 load `%24`.
+
+- **NUA is NOT the bug (verified).** The invariant "next-use distance at a use == 0" holds.
+  `llc -run-pass=amdgpu-next-use -amdgpu-next-use-dump-distance /tmp/sl3-rebuilt.mir` shows at
+  `%24 = GLOBAL_LOAD ... %20`: `%20[0]` (used here), `%23[1]`,`%27[1]` (used at `%28`). The dump
+  and `getNextUseDistance(I,VMP)` use the identical `InstrDist[&*I]`/`InstrOffset` path
+  (NUA.cpp:521-546, dump 624-674) — no divergence.
+
+- **Two real defects in the SPILLER (not NUA):**
+  1. **Wrong NUA query slot.** `sortRegSetByNextUse` queries `AfterCurrent =
+     std::next(I.getReverse())` (Spiller.cpp:461,499) — the snapshot AFTER MI. So a register
+     used by MI that also lives on (the load's shared address `%20 = tid<<2`, live across all 6
+     loads) is scored by its NEXT use (≥1) instead of the protective 0, and gets picked as the
+     spill victim even though spilling it can't lower RP at MI. Fix direction: query at MI's
+     own slot (uses→0, naturally protected; live-through get true distance).
+  2. **Wrong RP metric (root cause of the abort).** Spiller uses `RPTracker->reset(MI)`
+     (Spiller.cpp:343) → `GCNUpwardRPTracker::reset(MI)` resets to `getDeadSlot()` = AFTER MI,
+     then reads `getPressure()` = `CurPressure` (after-MI set). This UNDERCOUNTS the true
+     during-MI peak: `%28 = V_ADD3_U32 %27,%23,%24` with `%20` live-through has after-MI RP=2
+     but needs 4 registers during execution (3 inputs read simultaneously + `%20` crossing).
+     Spiller never sees pressure at `%28` → never spills `%20` there → RA can't color → abort.
+
+- **Key realization (user-led): the backward tracker ALREADY computes the during-peak.**
+  `GCNUpwardRPTracker::recede(MI)` (GCNRegPressure.cpp:518-576) sets `MaxPressure =
+  max(write-peak {defs+survivors}, read-peak {uses+survivors})`, early-clobber-aware,
+  lane-mask accurate. This inherently accounts for dying operands and operand→result reuse
+  (a dying operand isn't a survivor; the def reuses its slot) — so NO hand-rolled
+  `|live-in| + (noInputDies?1:0)` formula is needed. Verified: `recede` MaxPressure = 4 for
+  both `%24` and `%28`. The spiller simply reads `CurPressure` (after-MI) instead of driving
+  `recede()` + `getMaxPressure()`.
+
+- **Feasibility confirmed:** greedy fits this kernel in 3 VGPRs (NumVgprs 3, ScratchSize 16);
+  2 is genuinely infeasible. So 3 is the true minimum — the spiller bug, not infeasibility.
+
+- **Agreed fix direction (NOT yet implemented — awaiting fresh start):**
+  1. Drive RP via `GCNUpwardRPTracker::recede()` bottom-up, read `getMaxPressureAndReset()`
+     per MI (true during-peak; also O(n) vs current O(n²) per-instruction reset).
+  2. Select spill victims by querying NUA at MI's own slot (not AfterCurrent); candidates are
+     the live-through regs (operands get 0 and are excluded for free).
+  3. Re-validate: `num-vgpr=3` must allocate; full SSARA + SSASpiller suites green.
+  - Open detail to work out tomorrow: reshaping `processFunction` into a bottom-up walk with
+    incremental tracker state, and how the validator (`validateFinalRegisterPressure`) should
+    likewise use the during-peak (MaxPressure).
+
+- **Discarded approaches:** (a) "exclude MI.uses() from candidates" — treats the symptom, not
+  the RP-metric root cause; (b) hand-rolled during-peak formula — reinvents `recede()`'s
+  MaxPressure, worse and by hand. (c) editing NUA — NUA is correct.
+
+- **T2a test status:** `pipeline-spill-linear.ll` at `num-vgpr=4` produces a clean verified
+  spill (ScratchSize 12) — usable once we resume the test plan; the `num-vgpr=3` case is the
+  bug above.
+
+## 2026-06-17 — Spiller during-MI peak RP metric [BUGFIX] [SPILLER]
+
+- **Context / goal**
+  - Implement the agreed fix for the `num-vgpr=3` `FINAL RP VALIDATION FAILED` (after-MI metric
+    undercounts the during-MI peak). Repro `/tmp/sl-3.ll`.
+
+- **Changes applied (APPROVED, AMDGPUSSARegisterSpiller.cpp)**
+  - **[BUGFIX]** `processFunction` + `validateFinalRegisterPressure`: replace `reset(MI)` +
+    `getPressure()` (after-MI live set) with `reset(MI); recede(MI); getMaxPressure()` =
+    true during-MI peak (max of write-peak {defs+survivors} and read-peak {uses+survivors},
+    early-clobber aware). Per-MI reset scopes MaxPressure to the instruction.
+  - **[BUGFIX]** PHI guard: a PHI has no read phase (sources are live out of preds, moved by
+    edge copies in SSA destruction), so for PHIs use `getPressure()` (block-entry set), not
+    recede — otherwise recede counts PHI sources as a read peak and over-reports (caught by
+    `spill-vreg-subregister`: vreg_128 PHI reported RP 8).
+  - **[REFACTOR]** `sortRegSetByNextUse`: query NUA at MI's own slot (not `AfterCurrent`), and
+    subtract the lanes MI READS from each candidate (per-vreg `UsedLanes`), rebuilding `Active`
+    with only the live-across lanes. Removed early-clobber Steps 1/2/4 (subsumed: an EC use is
+    just a read here; recede covers EC in the metric). Lane-level subtraction keeps a
+    sub-register spillable when a sibling lane is read (e.g. `%x.sub1` while `%x.sub0` is read).
+    SSA has no partial defs, so the whole-register def exclusion is left as-is.
+  - **[REFACTOR]** `validateFinalRegisterPressure` re-walk no longer always-on "TEMPORARY"
+    `report_fatal_error`. Gated by a `cl::opt<cl::boolOrDefault>` `-amdgpu-ssa-spiller-verify-rp`
+    (TargetPassConfig::VerifyMachineCode idiom): on when the flag is set, and by default under
+    `#ifdef EXPENSIVE_CHECKS`. The SSASpiller suite forces it on for every test via a new
+    `lit.local.cfg` that appends the flag to the `llc` substitution (Attributor/lit.local.cfg
+    ToolSubst pattern) — verified the flag lands in the executed `llc` command. Member fn → no
+    `-Wunused-function`.
+
+- **Test changes (APPROVED, preserve intent)**
+  - `spill-physreg-def-midblock.mir`: `%d` now consumed by `S_NOP` instead of kept live to
+    `S_ENDPGM`, so ≤3 values live at the terminator (was 4 — genuinely infeasible at limit 3,
+    only "passed" before because the after-MI metric ignored the terminator read peak). Mid-block
+    physreg→one-spill intent preserved.
+  - `spill-vreg-subregister.mir`: regenerated via `update_mir_test_checks.py`. New output adds a
+    correct `SI_SPILL_V32_SAVE`/`RESTORE` in `bb.6` for the `V_ADD` result — `%1` is live-out
+    (needed in bb.4), so `%1`(4)+`%14`(4)=8 > limit 7; the old recorded output was over-limit
+    and the after-MI metric missed it.
+
+- **Results**
+  - `num-vgpr=3` now allocates (NumVgprs 3, ScratchSize 12), `=2` still infeasible (matches
+    greedy). Suites: SSASpiller 39 + 2 XFAIL (0 unexpected), SSARA 28/28, NUA 17/17.
+
+- **[TEST]** Added `SSASpiller/spill-unused-lane.mir` guarding the lane-granular candidate
+  selection: `%c = V_ADD %x.sub0, %a` with `%x.sub0`/`%a` reused by `%e` (so they stay live and
+  the def can't reuse → over limit 3 at `%c`); the only lane not read there is `%x.sub1`
+  (used late) → spiller spills `%x.sub1` (partial-lane), not `%x` or `%a`. Two distinct opcodes
+  (V_ADD / V_XOR) so the RHS isn't CSE-able. SSASpiller now 40 + 2 XFAIL (RP verifier on via
+  lit.local.cfg).
+
+## 2026-06-18 — E2E test plan complete + loop-coloring root cause [DESIGN] [BUG] [SSARA]
+
+- **Context / goal**
+  - Finish the 4-tier e2e test plan and freeze this worktree before two refactors.
+
+- **Test plan: 36 SSARA tests, 34 pass + 2 XFAIL (0 unexpected).** New this session:
+  T2a `pipeline-spill-linear` (+SPILLER marker check), T2b `pipeline-spill-diamond` (+marker),
+  T2c `pipeline-spill-loop` (XFAIL), T3a `pipeline-mixed-width` (MFMA gfx908), T3b
+  `pipeline-wide-v64`, T3c `pipeline-wide-v128` (XFAIL), T4a `pipeline-sgpr-heavy`, T4b
+  `pipeline-occupancy`. Plus committing earlier T1a `pipeline-linear`, T1b `pipeline-diamond`.
+  - Spill e2e tests carry a second RUN line: `-stop-after=amdgpu-ssa-register-spiller
+    -amdgpu-ssa-spill-markers=1 | FileCheck --check-prefix=SPILLER` asserting
+    `SI_SPILL_V32_SAVE` then `SI_VIRTUAL_SPILL_MARKER` (proves OUR spiller spilled; order is
+    SAVE-before-MARKER).
+
+- **The 2 XFAILs share ONE root cause [BUG] [REBUILDSSA]:** RebuildSSA legalizes in-place
+  subregister defs (`undef %r.sub0:vreg_64 = ...; %r.sub1 = ...`) inconsistently — it splits
+  the *re*-def (sub1 → separate vgpr_32 `%76`) but leaves the *first* def as a partial wide
+  def `undef %39.sub0:vreg_64`. So `%39` is a vreg_64 carrying ONE live lane; the RA allocates
+  the full tuple (2 VGPRs / aligned) for it → pressure inflation. T2c (divergent loop):
+  color() aborts "Failed to find free physreg" at a budget greedy fits (6). T3c (v128):
+  verifier "Using an undefined physical register". `repairSSAForNewDef` in MachineLaneSSAUpdater
+  is lane-aware and would never emit this.
+
+- **Spiller↔RA contract finding [Q0]:** if the spiller reports feasible but the RA can't color,
+  that IS a bug — their pressure models must agree. Here the spiller counts `%39` by live lanes
+  (1) while the RA spends a full tuple (2). Verified: grep shows the spiller does NOT special-case
+  REG_SEQUENCE/COPY (no coalescing assumption); GCNUpwardRPTracker counts copy/reg_seq normally
+  (src-lives-on ⇒ +1, matching un-coalesced RA). So the disagreement is solely the partial def.
+
+- **Register-file alignment facts (corrected):** VGPR tuples are **stride-1** (any N CONSECUTIVE
+  regs, NOT even-aligned); only SGPRs are alignment-constrained (stride 2 for 64-bit, 4 for 96+).
+  So VGPR fragmentation is about consecutiveness, SGPR about even-alignment. The T2c crash is
+  COUNT inflation (Q1), not alignment.
+
+- **Cross-block fragmentation (general):** per-block width-descending packs alignment only WITHIN
+  a block; a narrow value colored at an inconvenient slot in its def block, live into another
+  block, can break a wider value's consecutive/aligned run there (global ColorMap fixes color at
+  def). **Function-wide width-descending fixes this**: color all wider defs (function-wide) before
+  any narrower, so narrower never fragments wider. Cost: needs global cross-width interference
+  (replaces the cheap per-block WiderDefs accumulator the code moved to on 2026-06-12).
+
+- **Coalescer placement:** correctness must NOT depend on coalescing (RA must color any
+  spiller-feasible fn). After Q1 fix, the un-coalesced REG_SEQUENCE is fine (operands die →
+  result reuses) so coalescing is pure quality and can stay POST-RA (unified general+PHI phases).
+  A *post-RA* coalescer cannot rescue a *fragmentation* RA failure — that needs alignment-aware
+  spiller pressure or pre-color merge — but that's not what T2c hits once Q1 is fixed.
+
+- **Effort estimate (RebuildSSA):** local Q1 fix ≈ 0.5–1 day but throwaway + fragile (inline
+  VNInfo/lane machinery). Refactor to MachineLaneSSAUpdater ≈ 1–2 days, deletes ~250 lines, uses
+  `repairSSAForNewDef` (its documented primary use case = "new def of OrigVReg → rename + IDF PHIs
+  + rewrite dominated uses"), fixes Q1 + reachedByThisVNI heuristic + inflation; `ssa-rebuilder`
+  worktree already started. Recommendation: do the refactor.
+
+- **Phased plan**
+  1. Phase 0 (this worktree, DONE): finish test plan, XFAIL the 2 known-bug cases, commit batch.
+  2. Phase 1: RebuildSSA → MachineLaneSSAUpdater (ssa-rebuilder worktree). Validates by flipping
+     T2c + T3c XFAILs to passing.
+  3. Phase 2: RA coloring → function-wide width-descending (closes cross-block fragmentation).
+  - Tracked: unified post-RA coalescer (quality); alignment-aware spiller pressure (if needed).
+
+## 2026-06-18 — Function-wide width-descending coloring [FEATURE] [SSARA]
+
+- **[FEATURE] Function-wide width-descending coloring**
+  Swapped loop nesting: outer=Width (descending), inner=MBB (MDT pre-order).
+  Wider defs committed to ColorMap before narrower passes start. Prevents
+  narrow defs from fragmenting alignment slots needed by wider tuples.
+
+- **Cross-block interference via ColorMap scan in pickFreePhysReg**
+  For narrower passes, scans ColorMap for wider entries whose LI overlaps
+  the candidate. O(|ColorMap|) per pickFreePhysReg call — brute force.
+  Correct but quadratic for large kernels (~50ms for 10K vregs).
+
+- **[P1 TODO] Compile-time optimization**: replace O(|ColorMap|) scan with
+  interval tree or sorted-vector binary search. Target: O(log N + k) per
+  query. Analysis: current brute-force = ~48M iterations for large kernel
+  vs ~30K with per-block WiderDefs. Must fix before large-kernel testing.
+
+- **WiderDefs pre-scan retained**: for within-block wider defs not live at
+  BBStart. Populated from ColorMap at block entry, O(|block|) per block.
+
+- **Test: `align-fragmentation.mir`** (gfx90a): cross-block alignment
+  fragmentation. Per-block: %2→VGPR2-3 (MaxVGPR=4). Function-wide:
+  %2→VGPR0-1 (MaxVGPR=3). Saves 1 VGPR.
+
+- **All tests green**: 26 SSARA unit + 12 E2E pipeline = 38 PASS, 0 failures.
+
+- **Key finding: VGPR even-alignment is target-specific**
+  gfx90a/940+/gfx1250: `FeatureRequiresAlignedVGPRs` → `VReg_64_Align2`
+  (even-start only). gfx900/gfx10/11: stride-1, no alignment.
+  SGPR alignment (stride-2/4) is universal.
+
+---
+
+## Pending
+- **[P1] Compile-time: interval tree for wider interference query**
+- **Commit Phase-0 test batch** (10 SSARA .ll: T1a/b, T2a/b/c, T3a/b/c, T4a/b).
+- **Phase 1**: RebuildSSA → MachineLaneSSAUpdater. **Phase 2**: function-wide RA coloring.
+- **E2E LIT tests** — 4-tier plan: T1 (CFG) 2/4 formal done; T2 (spill) blocked on margin
+  design; T3 (widths), T4 (target) not started.
+- **Refactor RebuildSSA to `MachineLaneSSAUpdater`** — def-first renaming, removes the
+  `reachedByThisVNI` heuristic entirely (see FUTURE_IMPROVEMENTS.md).
 - **PHI coalescer** (paper §4.3) — reduce copies by recoloring PHI operands.
 - **Spiller tied-operand RP** fix.
-- **Loop-filter fallback** — `getVMPsToSpill` TODO ~632: when filter empties, sink to loop exit or pick invalid candidate.
+- **Loop-filter fallback** — `getVMPsToSpill` TODO ~632.
