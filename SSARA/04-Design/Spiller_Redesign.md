@@ -23,8 +23,8 @@ flowchart LR
     RS["RebuildSSA"] --> SP["SSA Spiller<br/>(all spill/reload here)"]
     SP --> RA["SSA Coloring<br/>(assign only, never inserts)"]
     RA --> DS["SSA Destruct + Rewrite"]
-    style SP fill:#d4edda,stroke:#28a745
-    style RA fill:#fff3cd,stroke:#ffc107
+    style SP fill:#d4edda,stroke:#28a745,color:#000
+    style RA fill:#fff3cd,stroke:#ffc107,color:#000
 ```
 
 ## 2. Why the Current Spiller Is Insufficient

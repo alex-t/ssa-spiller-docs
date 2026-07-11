@@ -142,21 +142,40 @@ width pass.
 
 ### 4.3 Per-Block State: `colorByWidth(Width)`
 
-For each BB in dominance pre-order:
+For each BB in dominance pre-order, and for each instruction in program order, the
+order is **kills-before-defs**: dying uses are freed *before* the defs are colored,
+so a def can reuse a source's physreg when that source dies at this instruction (no
+interference). PHIs are skipped in the kill step (their sources are live only to
+the predecessor boundaries; freeing here would clear physregs preceding PHI defs
+already claimed).
 
 ```mermaid
 flowchart TD
     Entry["seedOccupiedAtBBEntry(MBB)"]
-    Entry --> Walk["Walk instructions in program order"]
-    Walk --> Def{"Instruction has<br/>virtual def?"}
-    Def -->|"width == W"| Color["pickFreePhysReg(RC)<br/>→ ColorMap[VReg] = chosen"]
-    Def -->|"width > W<br/>(already colored)"| Mark["markOccupied(ColorMap[VReg])"]
-    Def -->|"width < W<br/>(not yet colored)"| Skip["Skip"]
-    Color --> Kill
-    Mark --> Kill
-    Skip --> Kill
-    Kill["For each use operand:<br/>if last use (not live after),<br/>markFree(physreg)"]
-    Kill --> Walk
+    Entry --> Walk["next instruction (program order)"]
+    Walk --> EC{"instr has an<br/>early-clobber def?"}
+
+    EC -->|no| Kill["free dying uses NOW:<br/>for each use, if not live after → markFree"]
+    EC -->|yes| Defer["DEFER dying-use frees:<br/>an early-clobber def is live while uses are read,<br/>so it must not reuse a dying use's reg"]
+
+    Kill --> Def
+    Defer --> Def
+
+    Def["color the defs of this instruction"]
+    Def --> DW1["width == W → pickFreePhysReg(RC); ColorMap[VReg]=chosen"]
+    Def --> DW2["width &gt; W (already colored) → markOccupied(ColorMap[VReg])"]
+    Def --> DW3["width &lt; W (not yet colored) → skip"]
+
+    DW1 --> Post
+    DW2 --> Post
+    DW3 --> Post
+    Post["apply deferred frees (early-clobber case only)"]
+    Post --> Walk
+
+    style Kill fill:#d4edda,stroke:#28a745,color:#000
+    style Defer fill:#fff3cd,stroke:#ffc107,color:#000
+    style DW1 fill:#cce5ff,stroke:#004085,color:#000
+    style Post fill:#d4edda,stroke:#28a745,color:#000
 ```
 
 ### 4.4 `seedOccupiedAtBBEntry`
@@ -182,16 +201,76 @@ When processing width W and encountering a def of width W' > W:
 
 ### 4.6 Tied Operands
 
-For instructions with tied def-use pairs (e.g., `$dst = V_MAC_F32 $src0, $src1, $dst(tied)`),
-the def inherits the use's physical register:
+For a genuine two-address instruction (e.g. `$dst = V_MAC_F32 $src0, $src1,
+$dst(tied)`), the def inherits the tied use's already-assigned physical register,
+preserving the hardware constraint that tied operands share one register:
 
-```
-if (MI.isRegTiedToUseOperand(DefOpIdx, &UseOpIdx))
-    Chosen = ColorMap.lookup(MI.getOperand(UseOpIdx).getReg());
+```cpp
+bool IsTied = MI.isRegTiedToUseOperand(MO.getOperandNo(), &UseOpIdx);
+if (IsTied && (Chosen = ColorMap.lookup(MI.getOperand(UseOpIdx).getReg()))) {
+  // ordinary two-address def: inherit the tied use's color
+}
 ```
 
-This preserves the hardware constraint that tied operands share the same
-physical register.
+**Tied `undef` self-ties.** Some instructions carry a tied operand whose value is
+a *don't-care* passthrough tied to the def's own (not-yet-colored) vreg — the DPP
+"old" source `%N = V_..._dpp undef %N, ...`, a D16 load's untouched half, or a MIX
+partial def. Here there is **no earlier color to inherit** (`ColorMap.lookup`
+returns nothing). The def is colored like an ordinary def via `pickFreePhysReg`;
+`rewriteOperands` then assigns the same physreg to the self-tied use (same vreg),
+preserving two-address form:
+
+```cpp
+else if (IsTied && MI.getOperand(UseOpIdx).isUndef()) {
+  Chosen = pickFreePhysReg(MRI->getRegClass(Reg), LIS->getInterval(Reg), WiderDefs);
+} else if (IsTied) {
+  llvm_unreachable("Tied use must be colored already or undef");
+}
+```
+
+The tied-uncolored-**non-undef** case is a hard failure (it cannot happen in valid
+SSA input). Guard: [[FIX_REPORT_tied-use-undef_2026-07-10]] (§4.4 crash class, 18
+tests).
+
+### 4.7 Cross-Call Color Constraint
+
+A value **live across a call** may not occupy a register the call clobbers — a
+`csr_*` regmask clobbers all caller-saved registers, and an explicit call def
+(e.g. the return-address SGPR pair) clobbers its own registers. `pickFreePhysReg`
+enforces this: it collects **clobber sites** into `CallSites` (call regmasks, and
+allocatable implicit physreg defs such as an inline-asm clobber) and rejects any
+candidate physreg that a site clobbers when the value is live at that site.
+
+```mermaid
+flowchart TD
+    P["pickFreePhysReg(RC, VI): candidate PR from allocation order"]
+    P --> U{"PR's units free in OccupiedRegUnits?"}
+    U -->|no| P
+    U -->|yes| X{"for each CallSite S where VI.liveAt(S):<br/>does S clobber PR?"}
+    X -->|yes| P
+    X -->|no| OK["return PR"]
+
+    style OK fill:#d4edda,stroke:#28a745,color:#000
+    style X fill:#fff3cd,stroke:#ffc107,color:#000
+```
+
+> **Open problem — physreg exhaustion (`Failed to find free physreg`).** This
+> constraint, combined with **no coalescing** and no eviction, is the current
+> largest crash class (~30 tests, §4.1 of [[CRASH_TRIAGE_REPORT_2026-07-10]]). A
+> value live across a call may take *only* callee-saved registers; one-shot
+> greedy-smallest-free lets non-cross-call values grab those first, and the lack
+> of coalescing inflates the working set (observed 11 → 20 distinct VGPRs) past
+> the callee-saved capacity — where greedy still succeeds via **eviction**. It is
+> a **coloring/coalescer** problem, **not** under-spilling (greedy compiles these
+> with `ScratchSize:0`); see [[ANALYSIS_A1_underspill_vs_coalescer_2026-07-10]].
+>
+> **Theory constraint (Hack).** Chordal SSA coloring is optimal only in
+> **dominance order**. A fix may bias the color *choice* (cross-call values →
+> callee-saved; others → caller-saved) but must **not** reorder to color
+> cross-call values first — that would break PEO optimality. Prototype biases were
+> tried and reverted (net regressions). The durable fix is the **PHI coalescer**
+> (paper §4.3), coalescing by color choice (never graph merge, to preserve
+> chordality).
 
 ---
 
@@ -200,7 +279,7 @@ physical register.
 ### 5.1 `ColorMap: DenseMap<Register, MCRegister>`
 
 Maps each virtual register to its assigned physical register. Populated
-during coloring, consumed by the (future) operand-rewrite phase.
+during coloring, consumed by SSA destruction and the operand-rewrite phase.
 
 ### 5.2 `OccupiedRegUnits: BitVector`
 
@@ -306,9 +385,9 @@ flowchart TD
 
     Destruct --> Output["Non-SSA MIR (physical regs)"]
 
-    style Spiller fill:#d4edda,stroke:#28a745
-    style RA fill:#fff3cd,stroke:#ffc107
-    style Destruct fill:#e2e3e5,stroke:#6c757d,stroke-dasharray: 5 5
+    style Spiller fill:#d4edda,stroke:#28a745,color:#000
+    style RA fill:#fff3cd,stroke:#ffc107,color:#000
+    style Destruct fill:#cce5ff,stroke:#004085,color:#000
 ```
 
 See also: [[03-Concepts/SSA_Destruction|SSA Destruction]] for the theory
@@ -371,29 +450,67 @@ bb.1:
 
 ---
 
-## 10. Current Status and Future Work
+## 10. SSA Destruction (PHI lowering + permutation resolution)
+
+After coloring, `destroySSAAndRewrite` lowers PHIs to physical-register moves and
+rewrites virtual operands to physregs. A block's PHIs form a **parallel copy** on
+each incoming edge (all read, then all written); `resolvePermutation` sequences
+them, breaking cycles by a tiered strategy (`emitSwap` where a swap primitive
+exists):
+
+```mermaid
+flowchart TD
+    PH["lowerPHIs: per predecessor edge, collect (src → dst) physreg copies"]
+    PH --> RP["resolvePermutation: order the copies"]
+    RP --> CH["acyclic chains: plain COPY in dependency order"]
+    RP --> CY{"cycle among copies?"}
+    CY -->|"identity (src == dst)"| NOP["no-op (drop the copy)"]
+    CY -->|"VGPR, GFX9+"| SWAP["V_SWAP_B32 (in place)"]
+    CY -->|"VGPR, no swap"| XORV["V_XOR_B32 triplet"]
+    CY -->|"SGPR, SCC dead"| XORS["S_XOR triplet"]
+    CY -->|"SGPR, SCC live / AGPR"| SCR["scratch register above the high-water mark<br/>(plain COPYs)"]
+
+    style NOP fill:#d4edda,stroke:#28a745,color:#000
+    style SWAP fill:#cce5ff,stroke:#004085,color:#000
+    style SCR fill:#fff3cd,stroke:#ffc107,color:#000
+```
+
+`eliminateRegSequences` lowers surviving `REG_SEQUENCE` the same way (a
+`REG_SEQUENCE` is also a parallel assignment). See
+[[03-Concepts/SSA_Destruction|SSA Destruction]] for the permutation-synthesis
+theory, and [[Architecture#Register files: SGPR, VGPR, AGPR]] for why an AGPR
+cycle must use a scratch AGPR.
+
+---
+
+## 11. Current Status and Future Work
 
 | Item | Status |
 |------|--------|
 | Width-descending PEO coloring | ✅ Implemented |
-| Tied operand handling | ✅ Implemented |
+| Tied operand handling (incl. `undef` self-ties) | ✅ Implemented |
+| Cross-call clobber constraint (`CallSites`) | ✅ Implemented |
 | Physical live-in tracking | ✅ Implemented |
-| kills-before-defs ordering | ✅ Implemented |
+| kills-before-defs ordering (early-clobber aware) | ✅ Implemented |
 | Physreg defs/kills in colorByWidth | ✅ Implemented |
 | Operand rewrite (vreg → physreg) | ✅ Implemented |
-| SSA Destruction (PHI lowering) | ✅ Implemented (lowerPHIs + resolvePermutation: scratch / V_SWAP_B32 / XOR) |
-| 25 LIT tests (coloring + destruction + physreg) | ✅ Passing |
-| Pipeline integration (lowerSGPRSpills) | ✅ Accounting done; materialization via SILowerSGPRSpills |
-| Pipeline wiring (-amdgpu-ssa-regalloc) | 🔧 Pending |
-| PHI Coalescing (paper §4.3) | 🔧 Pending |
-| Loop-filter fallback (validateFinalRP) | 🔧 Pending (2 XFAIL tests) |
+| SSA destruction (PHI lowering + permutation) | ✅ Implemented (no-op / swap / XOR / scratch) |
+| SGPR-spill accounting → `SILowerSGPRSpills` | ✅ Implemented |
+| **Pipeline wiring (`-amdgpu-ssa-regalloc`)** | ✅ **Done — wired in `addRegAssignAndRewriteOptimized`; corpus-tested end-to-end** |
+| Physreg exhaustion / cross-call (needs coalescer) | 🔧 Open (§4.7; ~30 crashes) |
+| PHI coalescing (paper §4.3) | 🔧 Pending (durable fix for the above) |
+| Per-class / fragmentation-aware spilling | 🔧 Proposed ([[GCNUpwardRPTracker_PerClassRP]], [[Spiller_Redesign]]) |
+| Loop-filter fallback (`getVMPsToSpill`) | 🔧 Pending |
+
+Corpus health: **103 / 3060** AMDGPU LIT tests crash under the SSA chain (see
+[[CRASH_TRIAGE_REPORT_2026-07-10]]).
 
 ---
 
-## 11. Source Files
+## 12. Source Files
 
 | File | Description |
 |------|-------------|
-| `llvm/lib/Target/AMDGPU/AMDGPUSSARegisterAllocator.h` | Pass class, data structures |
-| `llvm/lib/Target/AMDGPU/AMDGPUSSARegisterAllocator.cpp` | Coloring implementation (~200 LOC) |
-| `llvm/test/CodeGen/AMDGPU/SSARA/*.mir` | 12 MIR test files |
+| [`AMDGPUSSARegisterAllocator.h`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterAllocator.h) | Pass class, data structures |
+| [`AMDGPUSSARegisterAllocator.cpp`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterAllocator.cpp) | Coloring, SSA destruction, operand rewrite |
+| [`llvm/test/CodeGen/AMDGPU/SSARA/`](https://github.com/alex-t/llvm-project/tree/ssara/llvm/test/CodeGen/AMDGPU/SSARA) | LIT tests (coloring + destruction + pipeline) |

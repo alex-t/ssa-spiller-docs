@@ -188,9 +188,9 @@ flowchart TD
         Use["Actual use of %x — executes many times"]
     end
     
-    style Query fill:#e1f5fe
-    style PHLast fill:#c8e6c9,stroke:#4CAF50,stroke-width:3px
-    style Use fill:#ffcdd2,stroke:#f44336,stroke-dasharray: 5 5
+    style Query fill:#e1f5fe,color:#000
+    style PHLast fill:#c8e6c9,stroke:#4CAF50,stroke-width:3px,color:#000
+    style Use fill:#ffcdd2,stroke:#f44336,stroke-dasharray: 5 5,color:#000
 ```
 
 **Mathematical effect**:

@@ -1,10 +1,25 @@
 # Reload Optimizer Design
 
-> STATUS (2026-07-06): superseded in the spill path by dominance-ordered reload
-> placement -- see [[Reload_join_phi_coalescing]]. Dominance-order reuse replaces this
-> optimizer's intra-chain sharing, and its NCD-hoisting is intentionally dropped (it
-> raises RP in the dominator region, against the spill's purpose, and is usually blocked).
-> The code is kept as an optional future low-RP-only optimization.
+> **DEPRECATED — describes removed code (historical).**
+> `optimizeReloadPlacing` and its clique/NCD-hoisting have been **removed** from
+> [`AMDGPUSSARegisterSpiller`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp);
+> do not expect this function in the source. It is **superseded** by
+> dominance-ordered reload placement — see [[Reload_join_phi_coalescing]] and
+> [[SSA_SPILLER_DESIGN#Reload placement — cut-LI, dominance-ordered, redef-only]].
+>
+> **Why removed.** Dominance-order processing makes a dominating reload visible to
+> dominated uses, so intra-chain sharing is free without an optimizer. The only
+> capability dropped is **NCD-hoisting** (sharing one reload among sibling uses by
+> placing it at a common dominator *above* them) — that raises RP in the dominator
+> region, against the spill's purpose, and was usually blocked anyway. It may
+> return later as an optional low-RP-only optimization.
+>
+> **Note — not the same as loop hoisting.** The surviving helpers
+> `adjustReloadForLoop` / `canHoistReloadTo` / `walkPathsToUses` still exist and
+> hoist a reload to a **loop preheader** (a distinct, still-active optimization);
+> only the sibling-NCD reload *optimizer* below is gone.
+>
+> The rest of this document is retained for historical context only.
 
 ## Purpose
 

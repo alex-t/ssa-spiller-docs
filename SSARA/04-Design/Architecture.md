@@ -2,66 +2,115 @@
 
 High-level architecture for SSA-based register allocation on AMDGPU.
 
+> **Status (2026-07-11).** Wired behind `-amdgpu-ssa-regalloc` in
+> [`GCNPassConfig::addRegAssignAndRewriteOptimized()`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPUTargetMachine.cpp).
+> Corpus health: **103 / 3060** AMDGPU LIT tests still crash under the SSA chain
+> (down from ~850). See [[CRASH_TRIAGE_REPORT_2026-07-10]].
+
 ---
 
 ## Overview
 
-The SSA Register Allocation pipeline maintains SSA form throughout register allocation and spilling, only destroying SSA at the final stage before code emission.
+The pipeline keeps the program in SSA form throughout allocation and spilling,
+destroying SSA only at the final rewrite before code emission. The spiller's
+reloads transiently redefine the original virtual register but are **repaired
+inline** (reaching-VNI reconstruction), so the spiller returns SSA and there is
+only a **single** `RebuildSSA` bridge pass.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    LLVM Machine IR (SSA Form)                   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  SSA Rebuilder (temporary)                                      │
-│  - Restores SSA after PHI elimination pass destroys it          │
-│  - Will be removed once all pre-RA passes work on SSA-form MIR  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  SSA Spiller  (AMDGPUSSARegisterSpiller)                        │
-│  - Pass 1 (SGPR): Belady spill selection; store-at-definition   │
-│    countSGPRSpillVGPRs() → VGPRLimit -= N (accounting only;     │
-│    SGPR spill pseudos left in place for SILowerSGPRSpills)      │
-│  - Pass 2 (VGPR): Belady spill selection with reduced budget    │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  SSA Register Allocator  (AMDGPUSSARegisterAllocator)           │
-│  - Width-descending PEO coloring (MDT pre-order, bottom-up)     │
-│  - kills-before-defs: def can reuse dying source's physreg      │
-│  - SSA Destruction: lowerPHIs → resolvePermutation →            │
-│    rewriteOperands → leaveSSA → invalidateLiveness              │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  SILowerSGPRSpills  (existing LLVM pass, unmodified)            │
-│  - SuperReg now physical (post-RA) → SGPRSpillBuilder valid     │
-│  - SI_SPILL_S*_SAVE/RESTORE → V_WRITELANE/V_READLANE            │
-│  - IMPLICIT_DEF for lane VGPRs; sets WWM_REG flag               │
-│  - findUnusedRegister(SearchFromTop=true): picks free VGPRs     │
-│    above MaxVGPRIdx; no pre-reservation needed in allocator      │
-│  - LIS optional (getAnalysisIfAvailable); works post-leaveSSA   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  Machine IR (Non-SSA, physical regs)            │
-└─────────────────────────────────────────────────────────────────┘
+Each box below is one pass; the details of spilling, coloring, SSA destruction,
+and spill-code lowering live in the linked component documents (see the table in
+[Component Design Documents](#component-design-documents)).
+
+```mermaid
+flowchart TD
+    IN["Machine IR — post-PHIElimination (non-SSA)"]
+    RS["RebuildSSA (temporary bridge)<br/>re-establish SSA: split multi-def vregs, insert PHIs"]
+    SP["SSA Spiller<br/>lower register pressure to the per-class budget"]
+    RA["SSA Register Allocator<br/>PEO coloring, then SSA destruction + operand rewrite"]
+    LS["Spill-code lowering<br/>materialize spill/reload pseudos (two paths — see below)"]
+    OUT["Machine IR — non-SSA, physical registers"]
+
+    IN --> RS --> SP --> RA --> LS --> OUT
+
+    style RS fill:#e2e3e5,stroke:#6c757d,color:#000,stroke-dasharray: 5 5
+    style SP fill:#d4edda,stroke:#28a745,color:#000
+    style RA fill:#fff3cd,stroke:#ffc107,color:#000
+    style LS fill:#cce5ff,stroke:#004085,color:#000
 ```
 
-**CLI verification** (gfx1200, 2026-06-11):
-```bash
-llc -run-pass=amdgpu-ssa-register-spiller,\
-              amdgpu-ssa-register-allocator,\
-              si-lower-sgpr-spills -o - input.mir
+**Pipeline wiring** ([AMDGPUTargetMachine.cpp](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPUTargetMachine.cpp)):
+
+```cpp
+if (EnableSSARegAlloc) {                       // -amdgpu-ssa-regalloc
+  addPass(createAMDGPURebuildSSALegacyPass());
+  addPass(createAMDGPUSSARegisterSpillerPass());
+  // Spiller repairs SSA inline (reaching-VNI reconstruction) and returns SSA,
+  // so NO second RebuildSSA is needed here.
+  addPass(createAMDGPUSSARegisterAllocatorPass());
+  return true;
+}
 ```
-SGPR spill pseudo (virtual `%s_far`) → physical `$sgpr0` after RA → `SI_SPILL_S32_TO_VGPR $sgpr0, lane=0` + `IMPLICIT_DEF %8:vgpr_32` after `SILowerSGPRSpills`. No crash; no pre-reservation; top-of-file VGPR picked naturally.
+
+Pre-RA passes (`PHIElimination`, `TwoAddressInstruction`, `RegisterCoalescer`,
+`RenameIndependentSubregs`) run unchanged before this chain — which is exactly
+why `RebuildSSA` is needed to re-establish SSA.
+
+---
+
+## The two spill-code lowering paths
+
+Spilling produces target pseudo-instructions during the SSA Spiller; the actual
+machine code is materialized **after** register allocation, on two distinct
+paths depending on the register file:
+
+```mermaid
+flowchart TD
+    SGPR["SGPR spill pseudo<br/>SI_SPILL_S*_SAVE / _RESTORE"]
+    VGPR["VGPR spill pseudo<br/>SI_SPILL_V*_SAVE / _RESTORE"]
+    LANE["stored into VGPR lanes<br/>V_WRITELANE / V_READLANE"]
+    MEM["stored to scratch memory<br/>(buffer / scratch load-store)"]
+
+    SGPR -->|"SILowerSGPRSpills (after RA)"| LANE
+    VGPR -->|"PrologEpilogInserter → eliminateFrameIndex"| MEM
+
+    style SGPR fill:#fff3cd,stroke:#ffc107,color:#000
+    style VGPR fill:#d4edda,stroke:#28a745,color:#000
+    style LANE fill:#cce5ff,stroke:#004085,color:#000
+    style MEM fill:#cce5ff,stroke:#004085,color:#000
+```
+
+- **SGPRs → VGPR lanes.** SGPR spill pseudos stay in place until
+  [`SILowerSGPRSpills`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp)
+  runs *after* the SSA RA, when the spilled register is physical. It rewrites
+  them to `V_WRITELANE`/`V_READLANE` (each SGPR occupies one lane of a whole-wave
+  VGPR). Materializing this before coloring is impossible because the lowering
+  needs the physical register — so the spiller only **accounts** for the lane
+  VGPRs (`countSGPRSpillVGPRs()`) and defers materialization.
+- **VGPRs → scratch memory.** VGPR spill pseudos are lowered by
+  `SIRegisterInfo::eliminateFrameIndex` on the standard PrologEpilogInserter
+  path, to scratch buffer / flat load-stores.
+
+---
+
+## Register files: SGPR, VGPR, AGPR
+
+The spiller runs **two** passes — SGPR (Pass 1) then VGPR (Pass 2); it has no
+dedicated AGPR spill pass. The allocator, however, **is AGPR-aware** during
+coloring and SSA destruction:
+
+- Coloring classifies each value by the **chosen physical register's** file
+  (`getPhysRegBaseClass`), so an AV (AGPR-or-VGPR) vreg is tracked correctly even
+  though it is not `isVGPRClass`. High-water marks are kept per file
+  (`MaxVGPRIdx`, `MaxSGPRIdx`, `MaxAGPRIdx`).
+- AGPRs draw from the **vector** register budget alongside VGPRs
+  (`getMaxNumVGPRs`).
+- In SSA destruction, an AGPR permutation cycle cannot use `V_SWAP`/XOR (no such
+  primitive for AGPRs), so it is broken with a **scratch AGPR** (plain COPYs,
+  legalized to AGPR moves downstream). See
+  [[SSA_RA_Coloring#SSA Destruction (PHI lowering + permutation resolution)]].
+
+> AGPR *spilling to memory* (a spiller AGPR pass) is not implemented; AGPR
+> pressure relief currently relies on the VGPR budget accounting above.
 
 ---
 
@@ -72,51 +121,85 @@ SGPR spill pseudo (virtual `%s_far`) → physical `$sgpr0` after RA → `SI_SPIL
 | Component | Design Document | Status |
 |-----------|-----------------|--------|
 | **SSA Spiller** | [[SSA_SPILLER_DESIGN]] | Active |
-| **SSA Register Allocator** | [[../02-Components/SSA_Register_Allocator_Impl]] | Active |
+| **Reload placement** | [[Reload_join_phi_coalescing]] | Active (supersedes [[Reload_optimizer]]) |
+| **SSA Register Allocator** | [[SSA_RA_Coloring]] | Active |
 | **MachineLaneSSAUpdater** | [[MachineLaneSSAUpdater]] | Active |
-| **Next Use Analysis** | [[Persistent_Map_for_NUA]] | Active |
+| **Per-class RP tracker** | [[GCNUpwardRPTracker_PerClassRP]] | Proposed |
+| **Fragmentation-aware spiller** | [[Spiller_Redesign]] | Proposed |
+| **Next Use Analysis** | [[NextUseAnalysis]] · [[Persistent_Map_for_NUA]] | Active |
 
 ### Design Decisions
 
-- [[Decisions]] — Key design decisions and their rationale
+- [[Decisions]] — key design decisions and their rationale.
 
 ---
 
 ## Key Design Principles
 
 ### 1. Store at Definition
-Spill stores are emitted immediately after the value is defined (when EXEC mask is guaranteed full), not at the high-pressure point. This avoids EXEC drift correctness issues in divergent control flow.
+Spill stores are emitted immediately after the value is defined (when the EXEC
+mask is guaranteed full), not at the high-pressure point. This avoids EXEC drift
+correctness issues in divergent control flow. See
+[[Decisions#Store at Definition]].
+
+> **Invariant (PHI defs).** When the stored value's def is a PHI, the store is
+> inserted at `getFirstNonPHI()` — never `std::next(PHI)` — so all PHIs stay
+> contiguous at the block top. See
+> [[FIX_REPORT_spillAtDefinition-phi-order_2026-07-10]].
 
 ### 2. Separate Storage from Pressure Relief
-- **Physical store location**: Right after definition
-- **Virtual spill point**: Where register pressure is actually reduced (marked by `SI_VIRTUAL_SPILL_MARKER` in tests)
+- **Physical store location**: right after definition.
+- **Virtual spill point**: where register pressure is actually reduced (the
+  `KillIdx`; marked by `SI_VIRTUAL_SPILL_MARKER` in tests via
+  `-amdgpu-ssa-spill-markers=1`).
 
 ### 3. SGPR Spill Accounting vs Materialization Split
-- **Spiller** counts lane VGPRs needed (`ceil(Σ objectSize(FI)/4 / WaveSize)`) and reduces VGPR budget.
-- **Materialization** (writelane/readlane) happens in `SILowerSGPRSpills` after SSA RA, once SGPRs are physical.
-- No pre-reservation in the allocator — coloring colors bottom-up, leaving top-of-file VGPRs free.
+- **Spiller** counts the lane VGPRs the SGPR spills will need
+  ($\lceil \sum_{FI} \text{objectSize}(FI)/4 \div \text{WaveSize} \rceil$) and
+  reduces the VGPR budget accordingly.
+- **Materialization** (writelane/readlane) happens later in `SILowerSGPRSpills`
+  (see [the two spill-code lowering paths](#the-two-spill-code-lowering-paths)).
+- No pre-reservation in the allocator — coloring colors bottom-up, leaving
+  top-of-file VGPRs free for `SILowerSGPRSpills` to claim.
 
 ### 4. Lane-Aware Operations
-All spilling and SSA repair operations are lane-aware, tracking `(VReg, LaneBitmask)` pairs for correct subregister handling.
+All spilling and SSA repair operations are lane-aware, tracking
+[`(VReg, LaneBitmask)`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/VRegMaskPair.h)
+pairs for correct subregister handling.
 
 ### 5. SSA Preservation Until Rewrite
-The spiller maintains SSA form by using `MachineLaneSSAUpdater` to repair SSA after inserting reloads. SSA is destroyed only at the end of the RA pass (`destroySSAAndRewrite`).
+The spiller keeps SSA form by using [[MachineLaneSSAUpdater]] to repair SSA
+**inline** after inserting each reload redef (`emitReloadsAndRepairSSA` clears
+`SSAInvalidated`). SSA is destroyed only at the end of the RA pass
+(`destroySSAAndRewrite`). A `finalizeProperties()` step then mirrors what
+`VirtRegRewriter` does on the greedy path (sets `NoPHIs`/`NoVRegs`, preserves
+`TracksLiveness`).
+
+### 6. Coloring Never Inserts Instructions
+Coloring is a pure assignment; all spill/reload placement lives in the spiller.
+This is a hard invariant — spill-on-placement-failure inside coloring is
+**forbidden** (it would drag EXEC/WWM spill reasoning into coloring). See
+[[Spiller_Redesign#1. Motivation & The Hard Invariant]].
 
 ---
 
 ## Temporary Components
 
-### SSA Rebuilder ⚠️
+### RebuildSSA ⚠️
 
-> **Note:** This is a temporary workaround component.
+> **Note:** temporary workaround component.
+> Source: [`AMDGPURebuildSSA.cpp`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPURebuildSSA.cpp).
 
-The SSA Rebuilder restores SSA form after the existing greedy register allocator has destroyed it. This allows the SSA Spiller to operate on SSA-form IR.
+`RebuildSSA` restores SSA form after the pre-RA passes (PHIElimination, etc.)
+destroy it, so the SSA Spiller and allocator can operate on SSA-form IR. It
+renames each multi-def vreg into single-def SSA values (dominance pre-order, with
+the establishing/Root def processed last) and inserts lane-aware PHIs via
+`MachineLaneSSAUpdater::repairSSAForNewDef`. It resets the `TiedOpsRewritten`
+property, because re-SSA-ifying turns rewritten two-address tied operands back
+into distinct SSA values (the RA re-sets it after coloring).
 
-**Why temporary:**
-- The greedy allocator will eventually be replaced with a native SSA-based allocator
-- Once that happens, SSA form will be preserved throughout, eliminating the need for rebuilding
-
-See: [[SSA_Rebuilder|Pipeline: SSA Rebuilder]]
+**Why temporary:** once the pre-RA passes preserve SSA, the bridge is removed and
+SSA is maintained throughout.
 
 ---
 
@@ -124,13 +207,18 @@ See: [[SSA_Rebuilder|Pipeline: SSA Rebuilder]]
 
 | Feature | Description | Priority |
 |---------|-------------|----------|
-| Pipeline wiring | `-amdgpu-ssa-regalloc` flag in `addRegAssignAndRewriteOptimized()` | High |
-| PHI coalescer | Recolor PHI operands to reduce copies (paper §4.3) | Medium |
-| Loop-aware spilling | Fallback when loop filter empties candidate set | Medium |
-| Tied-operand RP | Correct RP for tied operand pressure in spiller | Medium |
+| PHI coalescer | Recolor PHI operands to reduce copies (paper §4.3); the durable fix for the cross-call [[SSA_RA_Coloring#Cross-Call Color Constraint\|physreg-exhaustion]] class | High |
+| Per-class RP / feasibility gate | [[GCNUpwardRPTracker_PerClassRP]] + [[Spiller_Redesign]] fragmentation-aware spilling & greedy fallback | High |
+| Spiller/RA budget reconcile | Spiller budgets via `getMaxNumVGPRs` (128 on gfx90a incl. AGPR half); RA colors into `getNumAllocatableRegs(VGPR_32)`=64 | High |
+| Loop-filter fallback | `getVMPsToSpill` when the loop filter empties the candidate set | Medium |
 
 ---
 
-## Historical Designs (Rejected)
+## Historical Designs (superseded)
 
-- [[Old_Spill_Placement_Design]] — Earlier approach before store-at-definition strategy
+- **Second `RebuildSSA` after the spiller** — removed 2026-07-06 (inline repair).
+- **Pruned-IDF / reload-optimizer / NCD-hoisting** — removed; superseded by
+  [[Reload_join_phi_coalescing]] (cut-LI dominance-ordered reconstruction).
+- **LR splitter** — removed; width-descending coloring reuses freed slots
+  (see [[SSA_RA_Coloring#D3: Splitter Removal]]).
+- **Interval-killing before SSA repair** — superseded; see [[Decisions]].
