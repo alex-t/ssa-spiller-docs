@@ -1,5 +1,11 @@
 # Reload Optimizer Design
 
+> STATUS (2026-07-06): superseded in the spill path by dominance-ordered reload
+> placement -- see [[Reload_join_phi_coalescing]]. Dominance-order reuse replaces this
+> optimizer's intra-chain sharing, and its NCD-hoisting is intentionally dropped (it
+> raises RP in the dominator region, against the spill's purpose, and is usually blocked).
+> The code is kept as an optional future low-RP-only optimization.
+
 ## Purpose
 
 The `optimizeReloadPlacing` function minimizes reload count by intelligently **hoisting reloads to common dominators** of multiple uses. Instead of emitting a reload before each use, we find opportunities to share a single reload among multiple uses when register pressure (RP) permits.

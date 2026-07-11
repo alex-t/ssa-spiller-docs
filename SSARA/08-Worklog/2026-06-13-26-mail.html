@@ -1,0 +1,28 @@
+<ul>
+<li><p>Contributions from AlexanderT</p>
+<ul>
+<li><p><strong>SSA Register Allocator</strong></p>
+<ul>
+<li><strong>Function-wide width-descending coloring:</strong> reordered coloring so all wider register defs across the whole function are colored before any narrower ones. This prevents a narrow value from fragmenting an alignment slot a wider tuple needs (e.g. a 32-bit value at an odd index blocking an even-aligned 64-bit pair on gfx90a), saving registers in mixed-width kernels.</li>
+<li><strong>PHI lowering — per-cycle register file:</strong> <code>resolvePermutation</code> chose the register file once from the first PHI of a block, but a block can hold both VGPR and SGPR PHIs. It now derives the file per permutation cycle, fixing a latent wrong-file scratch/swap miscompile.</li>
+<li><strong>PHI lowering — subregister sources:</strong> <code>lowerPHIs</code> dropped the subregister index on PHI source operands, emitting an illegal 64→32-bit copy (e.g. <code>%x.sub0</code> of an SGPR pair). It now copies the correct sub-register.</li>
+</ul></li>
+<li><p><strong>RebuildSSA</strong></p>
+<ul>
+<li><strong>Reaching-def fix:</strong> corrected use→value attribution with an exact “value-number-before-use” query, removing a spurious back-edge copy on loop induction variables.</li>
+<li><strong>Refactor onto MachineLaneSSAUpdater:</strong> replaced ~250 lines of bespoke SSA reconstruction with the shared lane-aware updater (<code>repairSSAForNewDef</code>). This removes a class of bugs where in-place sub-register defs were legalized into a partial wide def — a tuple carrying one live lane while the allocator reserved the full pair, inflating register pressure. It had caused loop-coloring failures and a 128-bit verifier error, both now fixed.</li>
+</ul></li>
+<li><p><strong>SSA Spiller</strong></p>
+<ul>
+<li><strong>Pressure measured at the instruction peak:</strong> the spiller used the after-instruction live set, which undercounts when operands die in place (multi-input or early-clobber instructions with a value live across them), so feasible budgets were aborting. It now uses the during-instruction peak, with PHIs handled specially (no read phase). A kernel at <code>amdgpu-num-vgpr=3</code> that previously aborted now allocates.</li>
+<li><strong>Lane-precise spill candidates:</strong> spill selection now excludes the lanes read by the current instruction, so a sub-register stays spillable when a sibling lane of the same tuple is read — subsuming the old early-clobber special case.</li>
+<li><strong>Spill-margin correction:</strong> the budget margin is now a true 10% floor, so small but satisfiable budgets are targeted exactly instead of being cut 25–50%.</li>
+<li><strong>Dead-PHI cleanup:</strong> a loop-invariant spill could leave an unused PHI that was being replaced by a dead reload occupying a VGPR; it is now deleted instead.</li>
+<li><strong>RP self-check behind a flag:</strong> the final register-pressure verifier is now <code>-amdgpu-ssa-spiller-verify-rp</code> (on by default in expensive-checks builds, and enabled across the spiller test suite) instead of an always-on fatal check.</li>
+</ul></li>
+<li><p><strong>Pipeline Integration &amp; Testing</strong></p>
+<ul>
+<li><strong>End-to-end test suite (4 tiers)</strong> covering RebuildSSA → SSA Spiller → SSA RA: CFG shapes, spilling (with checks proving the SSA spiller produced the spill), register widths (including MFMA/AGPR on gfx908), and target features (SGPR-heavy, occupancy).</li>
+</ul></li>
+</ul></li>
+</ul>

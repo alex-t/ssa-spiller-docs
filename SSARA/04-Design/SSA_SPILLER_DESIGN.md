@@ -16,6 +16,11 @@ This document describes the **current** SSA-aware register spilling pass for AMD
   - **File (symbolic)**: [`llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.h`](https://github.com/alex-t/llvm-project/blob/early-ssa-spiller/llvm/lib/Target/AMDGPU/AMDGPUNextUseAnalysis.h)
   - **Upstream PR**: [#156079](https://github.com/llvm/llvm-project/pull/156079)
 
+> Reload placement (2026-07-06): the dominance-ordered cut-LI reload placement that
+> replaces per-use reloads with surviving originals + merge PHIs is described in
+> [[Reload_join_phi_coalescing]]. It supersedes the NCD-hoisting [[Reload_optimizer]] in
+> the spill path.
+
 ## Overview
 The SSA spiller is a MachineFunction pass that:
 - Tracks register pressure (RP) while scanning instructions.
