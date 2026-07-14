@@ -345,7 +345,117 @@ A "fixed point" is now **per lane**: `y.sub0` can be a fixed point with
 
 ---
 
-## 9. Staging plan (verifiable increments)
+## 9. Measurement infrastructure (Step 0 — build this first)
+
+Nothing in §5–§8 can be evaluated without a number that says "how many copies do
+we emit today, and did a change make it better or worse." This is that number.
+It must exist **before** any coalescer code, because it is simultaneously the
+**baseline** (what the naive coloring costs) and the **regression guard** (every
+later step is "metric went down, spill count did not go up").
+
+### 9.1 What exactly to count — the hook point already exists
+
+The copy-vs-fixed-point decision is *already* made, once per φ operand, at a
+single line in `lowerPHIs()`:
+
+```cpp
+// AMDGPUSSARegisterAllocator.cpp  (inside the per-operand loop)
+if (SrcPhys != DstPhys)
+    PredCopies[Pred].push_back({SrcPhys, DstPhys});   // <-- NOT a fixed point
+// else: SrcPhys == DstPhys  -> fixed point, no copy emitted
+```
+
+- `SrcPhys == DstPhys` → **fixed point**, zero cost. This is exactly what the
+  coalescer is trying to manufacture.
+- `SrcPhys != DstPhys` → a copy the coalescer *might* have eliminated.
+
+So the metric taps this decision. Note it is a **post-coloring, pre-lowering**
+property: deterministic, and it is precisely the quantity the coalescer moves.
+
+### 9.2 Two numbers, not one
+
+A single "copy count" hides the thing we actually pay for. Track both:
+
+| Metric | What it is | Why |
+|---|---|---|
+| **Static φ-copy count** | # of φ operands with `SrcPhys != DstPhys` | direct, coalescer-visible; the objective it optimizes |
+| **Weighted φ-copy cost** | `Σ 2^loopdepth(Pred)` over those operands | matches the paper's `cost_f` (eq.1); a loop-carried copy is worth 2^depth of an entry-block copy |
+
+Optionally a third, **emitted-instruction count** (after `resolvePermutation`):
+a permutation *cycle* becomes 1–3 swap instructions (`emitSwap`), a *chain*
+becomes N moves, undef edges become `IMPLICIT_DEF`. This is the true dynamic
+cost, but it is noisier and lowering-dependent — keep it as a secondary check,
+optimize against the weighted static cost.
+
+### 9.3 How to expose it
+
+Two channels, both cheap:
+
+1. **`STATISTIC` counters** — for aggregate corpus runs (`-stats`):
+
+   ```cpp
+   STATISTIC(NumPhiCopies,       "PHI operands lowered to a copy (not a fixed point)");
+   STATISTIC(NumPhiFixedPoints,  "PHI operands that were already fixed points");
+   STATISTIC(NumPhiCopyWeight,   "Sum of 2^loopdepth over PHI-copy operands");
+   ```
+
+   Increment at the hook in §9.1. `NumPhiCopyWeight` needs
+   `MachineLoopInfo` (loop depth of `Pred`); it is already available in the RA
+   pass or added as an analysis dependency.
+
+2. **Per-function remark / debug dump** — for A/B on a single test:
+
+   ```
+   -mllvm -debug-only=amdgpu-phi-metric   (or a MachineOptimizationRemarkEmitter)
+   phi-metric  foo:  copies=42  fixed=17  weighted=136  (loops: bb.3 depth2 x8)
+   ```
+
+   Emit one line per function so a diff of two `llc` runs is a diff of these
+   lines. This is the harness the staging table (§10) checks each step against.
+
+### 9.4 Where the counting lives
+
+The count belongs at the `lowerPHIs()` hook (§9.1) because that is the
+ground-truth point where a copy is or isn't emitted — it stays correct no matter
+what the coalescer does upstream. Structure it as a tiny helper so it can run in
+**two modes**:
+
+- **Measure-only** (coalescer off): the baseline. Run over the corpus now, before
+  writing any coalescer, and record the totals.
+- **After-coalescer**: same helper, same run, coalescer on. The delta is the win.
+
+```mermaid
+flowchart LR
+  subgraph BASE["baseline run (today)"]
+    A1["color()"] --> A2["lowerPHIs()<br/>+ count hook"] --> A3["totals_before"]
+  end
+  subgraph NEW["with coalescer"]
+    B1["color()"] --> B2["PHI coalescer"] --> B3["lowerPHIs()<br/>+ count hook"] --> B4["totals_after"]
+  end
+  A3 --> D["delta = before − after<br/>(want ↓ copies, =/↓ spills)"]
+  B4 --> D
+```
+
+### 9.5 Guard rails
+
+The metric is only trustworthy paired with a **spill counter** — the §2 invariant
+promises coalescing never adds a spill, and the metric must be able to *prove*
+that on the corpus, not just assert it. Reuse the existing spill/occupancy/scratch
+accounting the corpus harness already reports (same run used for the naive-pass
+verification under `08-Worklog/2026-07-14-phicoalescer/`). A step is accepted only
+when:
+
+```
+weighted φ-copy cost:   strictly down (or equal)
+spill count / scratch:  not up
+occupancy:              not down
+```
+
+That triple is the acceptance test for every row of §10.
+
+---
+
+## 10. Staging plan (verifiable increments)
 
 | Step | Deliverable | Verify against |
 |---|---|---|
@@ -355,13 +465,13 @@ A "fixed point" is now **per lane**: `y.sub0` can be a fixed point with
 | 3 | **Cross-φ pinning**: pinned-candidate handling across OptUnits | paper's ≥95% territory |
 | 4 | **Sub-register lanes**: `(vreg, laneMask)` members (§8) | tuple φ tests |
 
-Land the metric first — it is both the baseline and the guard for every later
-step. Each step is checkable as "weighted copy count went down, spill count did
-not go up".
+Land the metric first (§9) — it is both the baseline and the guard for every
+later step. Each step is checkable with the §9.5 acceptance triple: "weighted
+copy count went down, spill count did not go up, occupancy did not drop".
 
 ---
 
-## 10. Open questions
+## 11. Open questions
 
 - Do we run recoloring globally (all φs into one PQ, paper-style cross-ω pinning)
   or per-region to bound cost on huge functions?
