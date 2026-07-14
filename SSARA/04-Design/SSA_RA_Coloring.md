@@ -498,7 +498,7 @@ cycle must use a scratch AGPR.
 | SGPR-spill accounting → `SILowerSGPRSpills` | ✅ Implemented |
 | **Pipeline wiring (`-amdgpu-ssa-regalloc`)** | ✅ **Done — wired in `addRegAssignAndRewriteOptimized`; corpus-tested end-to-end** |
 | Physreg exhaustion / cross-call (needs coalescer) | 🔧 Open (§4.7; ~30 crashes) |
-| PHI coalescing (paper §4.3) | 🔧 Pending (durable fix for the above) |
+| PHI coalescing (paper §4.3) | 🔧 Pending (durable fix for the above) — design: [[PHI_Coalescer]] |
 | Per-class / fragmentation-aware spilling | 🔧 Proposed ([[GCNUpwardRPTracker_PerClassRP]], [[Spiller_Redesign]]) |
 | Loop-filter fallback (`getVMPsToSpill`) | 🔧 Pending |
 

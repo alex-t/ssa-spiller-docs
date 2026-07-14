@@ -2724,3 +2724,271 @@ V_SWAP_B16 effb63, NewDefMI 400c67, WMMA-EC tied-use 75b82e) landed. Then this s
   amdgcn.bitcast.320bit.ll, which currently sits in that class). (2) Optionally resume the deferred guard
   tests using the ssara-guard sandbox. (3) Corpus 103→lower: next tractable classes B/D/H/I; class A
   (free physreg) needs the coalescer. Sandbox + /tmp/ssara-pin + /tmp/corpus-postfix still on disk.
+
+## 2026-07-11 (evening) — guard-test campaign complete + shell-guard/allowlist finalized
+
+- 11 SSA-RA guard tests committed+pushed (llvm/test/CodeGen/AMDGPU/SSARA/), all revert-proven in the
+  ssara-guard sandbox. Covers: bitcast padding (36154bd), wmma-EC tied-use (75b82e), NewDefMI (400c67),
+  self-tied undef (030d4d), undef-PHI->IMPLICIT_DEF (392cc), color-by-operand-flag (4cb21), dying-use
+  early-clobber (60727), RMW subreg re-def ordering (c8c11), loop-carried PHI self-ref (fad0), spiller
+  PHI-def insertion point (e138cc9, fix+test committed together), 16-bit V_SWAP_B16 permutation (effb6).
+- The previously-uncommitted spiller PHI-insertion fix (getFirstNonPHI) is now COMMITTED with its guard
+  test spill-phi-def-insertion-point.ll (repro bitcast_v20i16_to_v40i8, tahiti; "Found PHI after non-PHI").
+- DEFERRED with reasons: #9 partial-reload (90a2) is a MISCOMPILE fix (0 corpus crashes when reverted) ->
+  needs a correctness spill+partial-reload CHECK test, not a crash repro. 867d/b293c/c100e don't cleanly
+  revert (rewritten). 316d perf-only.
+- Repro-discovery: revert one fix in ssara-guard, rebuild, run harness with --llc, diff CRASH set vs the
+  fixed 103 baseline -> new crashes = that fix's repros. Reliable; found effb6 + c8c11.
+- Shell approval fully worked out: kernel 5.15 < 6.2 so NO Cursor sandbox; hooks CANNOT auto-approve
+  (deny/ask only). Auto-Run Mode = Use Allowlist + first-token chips + BARE tools (PATH /tmp/ssara-pin;
+  gllc/gextract symlinks -> sandbox binaries) + External-File Protection OFF. shell-guard.sh is now a thin
+  wrapper delegating to shell-guard-decide.py (Python/shlex, quote-aware, DENY-only carve-outs).
+
+## 2026-07-13 — colleague-fix review campaign (reports pasted one-by-one)
+
+Baseline for this campaign: HEAD `b1f8539069e0` (dead-def fix committed, with guard test
+`ra-dead-def-no-leak.ll`). Corpus baseline at this HEAD = **3071 tests, CRASH 96**
+(`/tmp/corpus-deaddef/report.md`); top crash class = **(10) "Operand has incorrect register
+class"**. Workflow per report: (1) save facts here + SHARED_CONTEXT, (2) critical review +
+propose change if needed, (3) after APPROVED apply + re-run corpus, compare vs CRASH 96.
+
+### Report A — tied-def must inherit the SUB-register of its tied use's color
+(`/tmp/ssara-reports/report-A-tied-use-subreg-color.md`)
+
+- **Symptom / class:** MachineVerifier "Operand has incorrect register class" (the (10) cluster).
+- **Root cause:** in `AMDGPUSSARegisterAllocator::color()` (~line 391) the tied (two-address) def
+  inherits the tied use's color via `ColorMap.lookup(useReg)` — the color of the WHOLE vreg. Wrong
+  when the tied use reads a SUB-register of a wider value (one 32-bit lane): `V_WRITELANE_B32`
+  writing one lane of a vreg_64+, `V_MOV_B32_dpp`/DPP variants tied to one lane. Def class is
+  VGPR_32 but it got the whole super-register color → verifier rejects (class mismatch). Buggy
+  output e.g. `$vgpr0_vgpr1 = V_WRITELANE_B32 $sgpr0,$sgpr1,$vgpr1(tied-def 0)` — should be `$vgpr1`.
+- **Fix (colleague):** when the tied use carries a subreg index, inherit
+  `TRI->getSubReg(TiedUseColor, UseSubIdx)` instead of the whole super-register; whole-reg case
+  (subIdx==0) unchanged. Minimal, correct (two-address def+use must occupy identical physical bits
+  = exactly that sub-register). Resolves 7/8 of the class; `llvm.amdgcn.permlane.ll` also needs
+  Fix B (undef tied source, separate report). Base HEAD matches ours (`b1f8539069e0`); reproduced
+  the writelane failure locally before applying.
+- **APPLIED + built (Fix A).** Cluster verify under `-amdgpu-ssa-regalloc -verify-machineinstrs`:
+  7/8 PASS (mov.dpp tonga/gfx1100/gfx1251, cvt.fp8.e5m3 gfx1250, writelane[.ptr] gfx1100,
+  scalar-float-sop2 gfx1150); permlane advances to "Tied physical registers must match" (= Fix B).
+
+### Report B — an undef use tied to a def must be rewritten to the def's physreg
+(`/tmp/ssara-reports/report-B-undef-tied-def-rewrite.md`)
+
+- **Symptom / class:** MachineVerifier "Tied physical registers must match" + "Two-address
+  instruction operands must be identical" — corpus class (1). Also unblocks one incorrect-reg-class
+  test (permlane needs A+B together).
+- **Root cause:** in `rewriteOperands()` the `!PhysReg` (uncolored) branch handles an undef vreg
+  operand by picking an arbitrary allocatable physreg (`Order.front()`). Fine for a PLAIN undef use,
+  but when the undef use is TIED to a def (DPP/PERMLANE "old"/passthrough source `undef %N.subX`,
+  where %N is never really defined) two-address form requires the tied use == the def's physreg;
+  arbitrary pick (or leftover subreg) violates it. E.g. `$vgpr3 = V_PERMLANE16_B32_e64 ..., undef
+  $vgpr1(tied-def 0)` — use should be $vgpr3.
+- **Fix (colleague):** in the undef branch, if `MO.isUse() && MI.isRegTiedToDefOperand(opNo,&DefOpIdx)`
+  copy the def's already-rewritten physreg verbatim: `MO.setSubReg(0); MO.setReg(DefPhys); continue;`.
+  Def operand precedes the tied use in operand order, so it's already a physreg (asserted). `undef`
+  flag preserved. Correct + minimal; reviewed OK.
+- **APPLIED + built (Fix A+B together).** Cluster now 8/8 PASS under `-amdgpu-ssa-regalloc
+  -verify-machineinstrs` (all mov.dpp variants, cvt.fp8.e5m3, writelane[.ptr], scalar-float-sop2,
+  permlane). Corpus run DEFERRED — batching more colleague fixes, will run full 3071-test corpus once
+  vs the CRASH 96 baseline at the end of the campaign.
+
+### Report C — classify spill/reload by the Spill TSFlag, not an opcode list
+(`/tmp/ssara-reports/report-C-spiller-isspill-tsflag.md`)
+
+- **Symptom / class:** assert `getVRegDef assumes at most one definition`
+  (MachineRegisterInfo.cpp:409) — corpus class (1). Repro schedule-avoid-spills.ll @load_fma_store gfx90a.
+- **Root cause:** `isSpillInstr`/`isReloadInstr` in AMDGPUSSARegisterSpiller.cpp (lines 54-118) match a
+  hand-maintained opcode list covering only SGPR (`S`) + VGPR (`V`) SI_SPILL pseudos. It OMITS AGPR
+  (`A`) and AGPR-or-VGPR (`AV`) variants (`SI_SPILL_A*`, `SI_SPILL_AV*`) used on gfx90a+. When a reload
+  is emitted as `SI_SPILL_AV32_RESTORE`, `isReloadInstr` returns false → the reload redef is never
+  renamed during SSA repair → spilled vreg gets TWO defs (AV reload subreg-def + original def) →
+  next spill's `MRI->getVRegDef` asserts.
+- **Fix (colleague):** replace both opcode lists with TSFlag classification:
+  `isSpillInstr = SIInstrInfo::isSpill(MI->getDesc()) && MI->mayStore()`;
+  `isReloadInstr = SIInstrInfo::isSpill(MI->getDesc()) && MI->mayLoad()`. The Spill TSFlag
+  (`Desc.TSFlags & SIInstrFlags::Spill`) is set on EVERY SI_SPILL_* pseudo (S/V/A/AV, all widths);
+  SAVE=mayStore, RESTORE=mayLoad. Old lists were a strict subset → previously-recognized still
+  recognized, only A/AV newly included. `SIInstrInfo::isSpill(const MCInstrDesc&)` confirmed static
+  (SIInstrInfo.h:821); header visible in spiller (uses SIInstrInfo* + TII-> already).
+- **Review:** correct + a robustness improvement (no list to silently omit files). Minor: TSFlag also
+  matches WWM spill pseudos, but those don't exist at the SSA-spiller stage → no behavior change in
+  practice, strictly more correct for A/AV. Fix C advances schedule-avoid-spills.ll to a pre-existing,
+  UNRELATED `Failed to find free physreg` (class (32), reproduces with spiller reverted).
+- **APPLIED + built (Fix C).** Verified: schedule-avoid-spills.ll gfx90a no longer hits `getVRegDef
+  assumes at most one definition`; now aborts at AMDGPUSSARegisterAllocator.cpp:424 `Failed to find
+  free physreg` (the expected pre-existing class-(32) bug). All 3 fixes (A+B+C) now in tree + built;
+  full corpus run pending at campaign end vs CRASH 96 baseline.
+
+### CORRECTION — bitcast VGPR-pressure "class A" is a DIAMOND, not loop-carried (2026-07-13)
+Earlier this session I characterized amdgcn.bitcast.512bit.ll `bitcast_v64i8_to_v16i32`
+(`Failed to find free physreg`, AMDGPURegisterAllocator.cpp:424) as "loop-carried PHI pressure /
+needs loop-aware spilling". THAT WAS WRONG. The IR is a plain if/else diamond (icmp %b,0 →
+cmp.true[add+bitcast] / cmp.false[bitcast] → end phi<16xi32> → ret); no loops. MIR CFG is acyclic:
+bb.0→{bb.3,bb.1}, bb.3→bb.1, bb.1→{bb.2,bb.4}, bb.2→bb.4 (bb.3 NOT reachable from bb.1; the
+bb.3→bb.1 edge is only a non-topological block-numbering artifact, not a cycle). Structure = AMDGPU
+SI_IF/SI_ELSE structurization of the diamond: bb.1 = 80 PHIs (merges undef `%593:vreg_512 =
+IMPLICIT_DEF` sub-lanes on the bb.0 edge with real repack values on the bb.3 edge), bb.4 = 16 PHIs
+(the real <16 x i32> phi). Peak ~80 simultaneous VGPR_32 at the merge > 64-VGPR occupancy budget;
+all peak values are PHI operands (structurally live at predecessor exits) so the spiller's
+reload-as-redef cannot lower it. Greedy = 64 VGPR + 268 scratch (fits via PHIElimination →
+pred-copies pre-RA + coalescing + live-range splitting). CORRECT fix direction: PHI-aware
+  coalescer + diamond-live-value spill, NOT loop-aware spilling.
+
+### CORPUS: A+B+C applied — CRASH 96 -> 86 (2026-07-13, /tmp/corpus-abc-run)
+Ran `scripts/ssara_corpus_harness.py` (3072 tests) against ssara real-tree llc with Fix A+B+C.
+- CRASH 96 -> 86 (net -10). **0 PASS->fail regressions** (verified by per-test bucket diff).
+- 3 crash CLASSES fully eliminated: "Operand has incorrect register class" 10->0 (Fix A);
+  "Tied physical registers must match" 1->0 (Fix B); "getVRegDef assumes at most one definition"
+  1->0 (Fix C). BONUS: "Multiple virtual register defs in SSA form" 5->2 (Fix C's TSFlag renames
+  A/AV reload redefs that previously left multi-defs).
+- 12 tests fixed; residual tests from the eliminated classes ADVANCED into the pre-existing
+  coalescer-lack class "Failed to find free physreg" 32->36 (+4) and "Invalid Object Idx" 8->9 (+1)
+  — these are the POSTPONED coalescer issues, expected.
+- 2 tests TIMEOUT->CRASH (agpr-copy-no-free-registers.ll, schedule-xdl-resource.ll): both were
+  already non-passing (timing out); now fail fast into "Failed to find free physreg" (coalescer-lack).
+  NOT PASS->CRASH regressions.
+- Remaining top classes on the (nearly green modulo coalescer) tree: (36) Failed to find free physreg
+  [COALESCER-LACK, postpone]; (9) Invalid Object Idx; (6) Register class not set [GISel]; (6) VOP const
+  bus; (6) Remaining virtual register [GWS]; (4) v_div_scale; (3) too many positional args [harness];
+  (2) Multiple vreg defs; + singletons. Plan holds: green all NON-coalescer classes, then build the
+  coalescer on a green tree.
+
+### FIX D — SSA Spiller cross-function state leak (Invalid Object Idx) [APPLIED 2026-07-13]
+- **Class:** (9) `MachineFrameInfo::getObjectAlign: Invalid Object Idx!` (crash in SSA Spiller).
+  Repros: load-global-i16.ll, global-extload-i16.ll, load-local-i16.ll, load-global-i8.ll,
+  amdgcn.bitcast.320bit.ll, si-sgpr-spill.ll, branch-relax-spill.ll, agpr-copy-no-free-registers.ll,
+  schedule-amdgpu-tracker-physreg.ll.
+- **Root cause:** `AMDGPUSSARegisterSpiller` members `Virt2StackSlotMap` (DenseMap<VRegMaskPair,int>)
+  and `StoredAtDefinition` (DenseMap<VRegMaskPair,MachineInstr*>) are per-function state but were
+  NEVER cleared. Vreg numbers restart each function, so a `{vreg,mask}` key collides across
+  functions: a stale FI (valid only in the prior function's FrameInfo) is returned -> out of range ->
+  getObjectAlign assert; and a dangling store MI makes spillAtDefinition wrongly skip storing.
+  DEFINITIVE runtime proof from full-file log: `global_zextload_v64i16_to_v64i32` stores %310 mask
+  0x3 (SI_SPILL_V32_SAVE %stack.1); next fn `global_sextload_v64i16_to_v64i32`'s different %310 mask
+  0x3 hits "Already stored %310 at definition" (stale) -> reload fetches stale FI -> assert. Isolated
+  1-fn / 2-fn (wrong predecessor) extracts DON'T repro (empty map at start); needs the specific
+  colliding predecessor (zext v64i16 pollutes sext v64i16).
+- **Fix (APPLIED):** clear `Virt2StackSlotMap` + `StoredAtDefinition` at the top of
+  `runOnMachineFunction` (next to `SSAInvalidated=false`), before both the SGPR and VGPR passes
+  (which legitimately share slots within a function). ReloadedRegs/MaxRPCache/BlockReloadCache were
+  already cleared; these two were missed. Verified: all 9 tests no longer assert Invalid Object Idx.
+  Guard-test candidate: a 2-function module where fn1 spills {vreg,mask} colliding with fn2 (needs
+  the exact zext+sext v64i16 pair or a hand-built equivalent).
+- **CORPUS (Fix D applied, /tmp/corpus-objidx):** CRASH 86 -> 81 (-5). **0 NEW crashes, 0 PASS->fail
+  regressions** (per-test bucket diff vs A+B+C). Class (9) "Invalid Object Idx" fully ELIMINATED
+  (9->0). Of the 9, 5 net-removed; 4 advanced into other crash classes (Failed to find free physreg
+  36->37, Using an undefined physical register 1->3 [downstream, agpr-copy/spill-exposed], generic
+  bug-report 2->3) — all were already crashing, so net progress, no regressions. Campaign tally from
+  dead-def baseline: CRASH 96 -> 86 (A+B+C) -> 81 (Fix D).
+
+### FIX E (candidate) — spiller physreg-RP underflow on undef physreg uses (Register class not set)
+- **Class:** (6) `isa<TargetRegisterClass*>(...) && "Register class not set, wrong accessor"` — crash in
+  AMDGPUSSARegisterSpiller processFunction. Mostly GISel shaders (ps-shader-arg-count.ll +5 GISel).
+- **Root cause (NOT the classless vreg — that's downstream):** `LivePhysRP` physreg-pressure counter
+  in `processFunction` (lines 256-294) decrements (`--LivePhysRP`) for EVERY physreg USE that is dead
+  after MI, INCLUDING `implicit undef` physreg uses. An undef use reads nothing and was never added to
+  LivePhysRP, so decrementing underflows unsigned. Repro: `_amdgpu_ps_1_arg` ends with
+  `SI_RETURN_TO_EPILOG implicit $vgpr0, implicit undef $vgpr1, implicit undef $vgpr2, implicit undef
+  $vgpr3` -> the 3 undef uses drive LivePhysRP to (unsigned)-2 = 4294967294 -> CurRP 4294967294 > limit
+  231 -> spurious "need to spill" -> spill path calls getLiveRegs/convertLiveRegs -> getRegClass on a
+  classless GISel-leftover (unused) vreg -> assert. Greedy is clean (its GCNRPTracker ignores undef
+  uses). The 29 classless vregs are GISel InstructionSelect leftovers, present identically
+  pre-RebuildSSA and pre-spiller (our pipeline did NOT create them).
+- **Fix (proposed):** in the physreg-use kill loop, skip undef uses: `if (MO.isUse() && !MO.isUndef())`.
+  An undef use kills nothing. Prevents the underflow -> no spurious spill -> no classless-vreg crash.
+  (Optional hardening: guard getRegClass on classless vregs, but with the underflow fixed the spill
+  path isn't entered spuriously; classless vregs are unused/not-live so shouldn't reach it.)
+- **APPLIED (undef-use guard + folded the Width==1/Width>1 branches into one 32-bit-slot loop, user
+  APPROVED).** Verified: 5/6 tests fixed. 6th (`GlobalISel/vni8-across-blocks.ll`, fn v256i8_liveout,
+  gfx906) is a DISTINCT second bug:
+- **FIX E-2 (candidate) — getLiveRegs calls getRegKind before hasInterval.** vni8's v256i8_liveout has
+  a LEGIT spill (VGPR 61 > limit 58, not underflow); the spill path calls
+  `llvm::getLiveRegs(Slot,LIS,MRI,Kind)` (GCNRegPressure.cpp:466) which loops ALL vregs and calls
+  `GCNRegPressure::getRegKind(Reg,MRI)` (-> `MRI.getRegClass(Reg)`, GCNRegPressure.h:155) at line 468
+  BEFORE the `if (!LIS.hasInterval(Reg)) continue;` guard at 471. Unused classless GISel-leftover
+  vregs (no class, no interval) hit getRegClass -> assert. Fix: check `hasInterval` FIRST, then
+  `getRegKind` (behavior-preserving: both guards must pass; only avoids getRegClass on interval-less
+  vregs). Confirmed crash frame: getRegClass <- getRegKind(GCNRegPressure.h:155) <-
+  getLiveRegs(GCNRegPressure.cpp:468) <- processFunction:350.
+- **APPLIED (E-2, user APPROVED): reordered hasInterval before getRegKind in getLiveRegs.** All 6/6
+  "Register class not set" tests now pass. Fix E = two commits' worth: (E-1) spiller undef-use guard +
+  32-bit-slot loop fold in AMDGPUSSARegisterSpiller.cpp; (E-2) getLiveRegs guard reorder in
+  GCNRegPressure.cpp. Corpus gate pending.
+
+### FIX F (candidate) — rewriteOperands skips instructions inside BUNDLEs (Remaining virtual register)
+- **Class:** (6) MachineVerifier `Remaining virtual register %N` after AMDGPU SSA RA. All GWS tests:
+  llvm.amdgcn.ds.gws.{init,barrier,sema.br}.ll, ds_gws_align.ll, remove-incompatible-gws.ll,
+  tail-duplication-convergent.ll. Repro gws_init_offset0 (amdgcn-mesa-mesa3d tahiti).
+- **Root cause:** GWS instructions are wrapped in a BUNDLE:
+  `%13:vgpr_32 = COPY %12; BUNDLE implicit %13,... { DS_GWS_INIT %13, ... }`. `rewriteOperands`
+  (AMDGPUSSARegisterAllocator.cpp:834) iterates `for (MachineInstr &MI : MBB)`, which visits BUNDLE
+  HEADERS but NOT the instructions inside bundles. So the header's `implicit %13` is rewritten to a
+  physreg but the DS_GWS_INIT's `%13` inside the bundle is left virtual -> verifier "Remaining virtual
+  register %13". color() (285/296) is fine: %13's def (COPY) is top-level and the bundle header's
+  implicit %13 gives coloring/kill tracking.
+- **Fix (proposed):** rewriteOperands iterate `MBB.instrs()` (all MIs incl. bundled) instead of `MBB`.
+  Both the header implicit %13 and the internal DS_GWS_INIT %13 then map to the same colored physreg.
+  Minimal; color() unaffected (needs no change for GWS).
+
+### CORPUS (Fix E, /tmp/corpus-regclass): CRASH 81 -> 75 (-6). 0 new, 0 PASS->fail regressions.
+"Register class not set" class fully eliminated (6->0). Campaign tally: 96 (dead-def) -> 86 (A+B+C) ->
+81 (D, Invalid Object Idx) -> 75 (E, Register class not set).
+
+### FIX F APPLIED (user APPROVED): rewriteOperands iterates MBB.instrs() (bundle-aware).
+All 6 GWS "Remaining virtual register" tests verified clean.
+### CORPUS (Fix F, /tmp/corpus-gws): CRASH 75 -> 69 (-6). 0 new, 0 PASS->fail regressions.
+GWS "Remaining virtual register" class fully eliminated (6->0). Campaign tally: 96 (dead-def) ->
+86 (A+B+C) -> 81 (D) -> 75 (E) -> 69 (F).
+
+### FIX G APPLIED — super-use REG_SEQUENCE shared per instruction (VOP const-bus + v_div_scale)
+- **TWO classes, ONE root cause (10 crashes):** (6) `VOP* instruction violates constant bus
+  restriction` + (4) `v_div_scale require src0 = src1 or src2`. Both from an instruction reading the
+  same wide value in >1 operand: `V_MAX_F64 0,%21,0,%21` / `V_DIV_SCALE_F64 0,%73,0,%73` (legal: one
+  SGPR/same reg read twice).
+- **Root cause:** the value is built from partial subreg defs (e.g. `undef %21.sub1=COPY; %21.sub0=COPY`
+  -> 2 VNs), so RebuildSSA reconstructs it via a super-use REG_SEQUENCE (`buildRSForSuperUse` in
+  MachineLaneSSAUpdater). That is called ONCE PER USE OPERAND and mints a FRESH REG_SEQUENCE vreg each
+  time -> two operands get two distinct composed vregs (%23,%24 / %83,%84) -> two different registers
+  -> constant-bus / src0!=src1 violation. Greedy is clean (no RebuildSSA). Not coalesced away (no COPY
+  relation between the two identical REG_SEQUENCEs) and the verifier runs pre-coalesce.
+- **Fix:** session-scoped `SuperUseRSCache` (DenseMap<{UseMI,OpMask},Register>) in MachineLaneSSAUpdater
+  (h + cpp): the partial branch of `rewriteUseReaching` reuses the REG_SEQUENCE already built for the
+  first operand of the SAME non-PHI instruction reading the SAME lanes. PHIs excluded (their operands
+  read on distinct edges -> must not share). Cleared per OrigVReg session (next to DefInstrToRenamed/
+  LanePHIs). Multi-def patching still works: the shared REG_SEQUENCE's OldVR placeholder lanes are
+  patched once by the other def's rewrite. Verified: all 10 tests (6 VOP + 4 div_scale) pass.
+### CORPUS (Fix G, /tmp/corpus-superuse): CRASH 69 -> 59 (-10). 0 new, 0 PASS->fail regressions.
+Both "VOP constant bus" (6) and "v_div_scale" (4) classes fully eliminated. Campaign tally: 96
+(dead-def) -> 86 (A+B+C) -> 81 (D) -> 75 (E) -> 69 (F) -> 59 (G).
+
+### Remaining crash classes @ CRASH 59 (triaged, NOT yet fixed — each a distinct deeper root cause)
+- (3) Using an undefined physical register: TWO sub-causes — $scc undefined at S_CBRANCH_SCC1 in
+  SPILLED fns (branch-relax-spill.ll, schedule-amdgpu-tracker-physreg.ll: spill_func) [spiller
+  clobbers/splits $scc liveness]; + call-related physreg args (indirect-addressing-si-gfx9.ll
+  insertelement_with_call: BUFFER_STORE reads undefined $vgpr12-15/$sgpr0-3).
+- (2) Multiple virtual register defs in SSA: INLINEASM AV_32 subreg outputs (a-v-{global,flat}-atomic-
+  cmpxchg.ll: `INLINEASM ...regdef:AV_32, def undef %N.sub1` + `def %N.sub0`). RebuildSSA DETECTS the
+  vreg has 2 VNs and repairSSAForNewDef finds+renames the def operand, yet BOTH defs persist post-
+  reconstruction -> deeper INLINEASM-subreg-def reconstruction bug; needs dedicated investigation.
+- (2) MachineCopyPropagation should be run after RA; (2) containsInterval Segment not entirely in
+  range; + ~8 singletons. Plus the postponed (37) Failed to find free physreg = COALESCER-LACK.
+These are qualitatively harder/nichier than A-G (spill-liveness + INLINEASM SSA reconstruction);
+recommend dedicated per-class investigation rather than rapid batching.
+
+### GUARD TESTS created for A-G (2026-07-13) — 8 tests under llvm/test/CodeGen/AMDGPU/SSARA/
+All PASS with fixes; batched revert-proof (git stash all 5 source files -> rebuild -> run) confirmed
+each crashes without the fixes; B additionally verified in ISOLATION (only B reverted, A present).
+Full SSARA lit: 65 tests, 0 failures.
+- A -> ra-tied-use-subreg-color.ll (writelane.v2f32, gfx1100; "Operand has incorrect register class")
+- B -> ra-undef-tied-def-rewrite.ll (v_permlane16_b32_undef_tid_f64, gfx1100; "Tied physical
+  registers must match"). NOTE: cvt.fp8 word1_dpp was REJECTED as a B guard — it needs A, not B
+  (passed with only B reverted). permlane genuinely needs B (crashes B-sig with A present, B reverted).
+- F -> ra-bundle-operand-rewrite.ll (gws.init, tahiti mesa3d; "Remaining virtual register")
+- C -> spill-av-reload-ssa-repair.ll (copy-hoist-no-spills foo, gfx908; "getVRegDef assumes at most
+  one definition") — found via corpus diff (deaddef baseline crash -> now OK).
+- D -> spill-cross-function-stackslot.ll (zext+sext v64i16 pair, generic amdgcn; "Invalid Object Idx";
+  ORDER matters: zext first pollutes the map).
+- E -> spill-undef-physreg-pressure.ll (_amdgpu_ps_1_arg, gfx1010 pal GISel; E1 underflow) +
+  spill-classless-vreg-liveregs.ll (v256i8_liveout, gfx906 GISel; E2 getLiveRegs).
+- G -> rebuildssa-superuse-shared-regseq.ll (v_maximumnum_f64_s_v, gfx700; "constant bus").

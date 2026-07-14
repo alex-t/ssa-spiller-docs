@@ -207,7 +207,7 @@ SSA is maintained throughout.
 
 | Feature | Description | Priority |
 |---------|-------------|----------|
-| PHI coalescer | Recolor PHI operands to reduce copies (paper §4.3); the durable fix for the cross-call [[SSA_RA_Coloring#Cross-Call Color Constraint\|physreg-exhaustion]] class | High |
+| PHI coalescer | Recolor PHI operands to reduce copies (paper §4.3; design: [[PHI_Coalescer]]); the durable fix for the cross-call [[SSA_RA_Coloring#Cross-Call Color Constraint\|physreg-exhaustion]] class | High |
 | Per-class RP / feasibility gate | [[GCNUpwardRPTracker_PerClassRP]] + [[Spiller_Redesign]] fragmentation-aware spilling & greedy fallback | High |
 | Spiller/RA budget reconcile | Spiller budgets via `getMaxNumVGPRs` (128 on gfx90a incl. AGPR half); RA colors into `getNumAllocatableRegs(VGPR_32)`=64 | High |
 | Loop-filter fallback | `getVMPsToSpill` when the loop filter empties the candidate set | Medium |
