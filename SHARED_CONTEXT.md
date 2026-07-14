@@ -1,7 +1,101 @@
 # Shared Context — SSA RA Project
 
 Cross-worktree knowledge base. Updated after significant sessions.
-Last updated: 2026-07-10 (evening)
+Last updated: 2026-07-14
+
+## 2026-07-14 — ssara synced to ff16 baseline (affinity + fold), PHI pass renamed, 3 commits pushed
+
+**Spiller allocatable-budget cap COMMITTED fc16 (`fc1614731504`).** `AMDGPUSSARegisterSpiller`:
+`VGPRLimit/SGPRLimit = min(getMaxNum*, TRI->getAllocatableSet(&VGPR_32/&SGPR_32RegClass).count())`
+BEFORE the 10% margin. `getMaxNumVGPRs` = occupancy target over the whole vector budget (gfx90a =
+VGPR+AGPR = 128) but the allocator colors into VGPR_32 only (64); the spiller over-budgeted ~2x,
+under-spilled, `color()` aborted "Failed to find free physreg". Corpus CRASH -10, 0 new. (Reconciles
+the long-open "spiller vs RA budget differ" item.)
+
+**PHI pass renamed `AMDGPUPHICoalescer` → `AMDGPUSimplifyUndefPHI`** (file/class/symbols;
+DEBUG_TYPE `amdgpu-simplify-undef-phi`; flags `-amdgpu-simplify-undef-phi[-flag|-fold]`; stats
+`NumUndefFlagged`, `NumPHIsFolded`). Two rewrites: (a) flag fully-undef PHI operands undef; (b) fold a
+single-real undef-PHI onto its operand when its def dominates the PHI (whole-reg only; MDT test;
+declines loop-carried back-edge). **Kept STANDALONE (load-bearing):** it mutates undef flags →
+invalidates LiveIntervals + AMDGPUNextUseAnalysis, which the pass manager recomputes for the spiller
+(pass only preserves CFG/MDT). Folding it into the spiller would strand a STALE NUA (spiller acquires
+`AMDGPUNextUseAnalysisWrapper` up front) — that is the concrete reason a pre-spiller pass boundary is
+required, not overkill.
+
+**ssara vs ssara-claude (both fc16) — the baseline gap.** `corpus-ff16` (47 crashes, /tmp/corpus-ff16)
+was run on **ssara-claude**, which has three behavioral features ssara lacked: (1) spiller
+reload-lane-narrowing — **POST-baseline, OUT OF SCOPE**; (2) φ-affinity coloring (promote patch 02);
+(3) PHI fold (b). ssara alone = 50 crashes; +3 vs ff16 = `urem.ll`, `wave32.ll` ("Segment is not
+entirely in range!"), `amdgcn.bitcast.576bit.ll` ("Failed to find free physreg"). Proven NOT the
+rename via A/B: `urem.ll` asserts identically with the PHI pass on AND off (pass-independent). Fix =
+port affinity(2) + restore fold(3).
+
+**Result:** after the sync, corpus `uptodate` (jobs=32/timeout=180) = **CRASH 47, IDENTICAL set to
+ff16, all buckets match** (the one REGRESSION delta `a-v-flat-atomicrmw` is ff16's flaky TIMEOUT(1)
+resolving). Three commits pushed: `da78e671` (metric, stats-only), `3deb087e` (phi-affinity coloring),
+`80fc7d8d` (AMDGPUSimplifyUndefPHI pass). Report: `SSARA/08-Worklog/corpuse/corpus-14-07-2026.md`.
+
+### Reusable techniques (this session)
+- **Non-interactive hunk-split for separate commits:** classify each `git diff` hunk by content
+  marker, emit a subset patch, `git apply --cached` it (commit 1), then a whole-file `git add` stages
+  the residual after commit 1 lands (commit 2). Verify with `git diff --cached`.
+- **Upstream formatting checks:** local `git-clang-format` can be MORE LENIENT than CI — apply CI's
+  proposed diff verbatim. A push rejected with "fetch first" after remote merged main → `git pull
+  --rebase` then push (rebases your isolated commit on top).
+- **Corpus harness:** jobs=32/timeout=180 avoids the tail-overload timeout→CRASH misclassification
+  that jobs=64 produces (some tail tests ballooned to ~700s).
+
+## 2026-07-11 (evening) — guard-test campaign COMPLETE (11 tests) + shell-guard finalized
+
+**11 guard tests committed+pushed** in `llvm/test/CodeGen/AMDGPU/SSARA/`, each REVERT-PROVEN
+(crash/incorrect-class when the fix is reverted in the ssara-guard sandbox, clean with it):
+rebuildssa-bitcast-oversized-padding (36154bd), rebuildssa-wmma-early-clobber-tied-use (75b82e),
+rebuildssa-newdef-among-all-operands (400c67), ra-undef-self-tied-def (030d4d),
+rebuildssa-undef-phi-operand (392cc), ra-color-by-operand-flag (4cb21),
+ra-dying-use-early-clobber (60727; test_load_mfma_store16), rebuildssa-rmw-subreg-reorder (c8c11;
+subreg-coalescer-crash @foo), rebuildssa-loop-carried-phi-self-ref (fad0;
+loop-live-out-copy-undef-subrange), spill-phi-def-insertion-point (the previously-UNCOMMITTED
+spiller PHI-insert fix — now COMMITTED e138cc9 WITH its test), ra-swap-16bit-permutation (effb6;
+v_swap_b16.ll @swap). Commits 50bef5c, 402d82a, 528cbc5, e138cc9, 938f117, 804652.
+
+DEFERRED (precise reasons): #9 partial reload (90a2) is a MISCOMPILE fix, not a crash — reverting
+it causes ZERO corpus crashes (partial reload marks un-spilled lanes undef -> wrong code, no
+verifier abort); a guard needs a hand-crafted spill+partial-reload correctness CHECK, not an .ll
+crash repro. 867d/b293c/c100e do NOT cleanly `git revert` (later commits rewrote the code); covered
+by #1/#2/#3 machinery. 316d (CallSites isAllocatable) is perf-only.
+
+### Repro-discovery technique (reusable, reliable)
+Revert ONE fix in `ssara-guard` (`git reset --hard HEAD && git revert -n <c> && ninja -C build/guard
+llc`), run the harness `--llc /work/atimofee/sandbox/github/ssara-guard/build/guard/bin/llc`, then
+diff the CRASH set vs the fixed 103 baseline (`/tmp/corpus-postfix/results.jsonl`) -> the NEW crashes
+are that fix's repros; extract the crashing function and verify crash-reverted/clean-fixed. This
+found effb6 (v_swap_b16.ll) and c8c11 (subreg-coalescer-crash) where guessing failed. Single-function
+extraction sometimes doesn't reproduce (needs the file's pressure) — always confirm.
+
+### Prompt-free tooling (kernel 5.15 = no sandbox; hooks can't auto-approve)
+Bare-tool PATH: `export PATH=/tmp/ssara-pin:$PATH` -> bare `llc`/`FileCheck`/`llvm-extract` = fixed
+(pinned HEAD) binaries; symlinks `gllc`/`gextract` in /tmp/ssara-pin = the ssara-guard SANDBOX
+(reverted) binaries. Cursor Auto-Run Mode = "Use Allowlist" with these first-token chips + BARE tool
+invocation (allowlist matches FIRST TOKEN only; `$SG/llc`/`cd &&` never match). External-File
+Protection turned OFF (writes to /tmp + ssara-guard are outside the ssara workspace). shell-guard hook
+is DENY-ONLY (shlex/quote-aware) — hooks cannot auto-approve, only deny/ask.
+
+## 2026-07-11 — shell approval hardening (stop the once-a-minute "Allow" prompts)
+
+Root cause of the per-command approval pain during autonomous work: on this remote host
+Cursor's execution-sandbox never engages (`sandbox:true` = 0 in the hook audit log
+`.cursor/hooks/state/shell-guard.log`), so every non-allowlisted command prompts.
+Fix (committed to the ssara worktree, `.cursor/hooks/shell-guard.sh`, an APPROVED safety change):
+upgraded the audit-only `beforeShellExecution` hook into a DECISION hook that hard-DENYs
+destructive carve-outs of otherwise-safe tools and otherwise ABSTAINS (never auto-allows).
+Per-segment analysis (split on `| ; &` backtick/newline; peel env/sudo/xargs wrappers; strip
+quotes/backslash/path to basename) so a flag on a piped command or a tool name as an argument
+never misfires. Blocks: find `-delete/-exec/-fprint*`; every sed `-i` variant + sed `w`/`s///w`
+writes; perl `-i`; awk `-i inplace`/`system(`/`print>file`; `tee FILE`; `dd of=`; `truncate FILE`;
+`ex`/`ed`. This makes it SAFE to add to Cursor's UI Command Allowlist for auto-run:
+`ninja cmake llc FileCheck llvm-extract git cp mkdir find sed perl awk python3` (user adds these
+in Settings; hook is the safety net). Test the hook by reading payloads from a FILE — inlining
+destructive strings makes the LIVE hook block your own test command.
 
 ## 2026-07-10 (evening) — padding fix committed; corpus 195→103; guard-test backlog + infra
 
@@ -616,6 +710,66 @@ dead but consumed a VGPR slot, pushing the loop's live count over budget → `co
 
 **Open work**: PHI coalescer, spiller tied-operand RP fix, loop-filter fallback (`getVMPsToSpill`
 ~line 623), reg-unit vs pressure-unit mismatch fix.
+
+### Colleague-fix review campaign (2026-07-13, base HEAD b1f8539069e0, corpus CRASH 96)
+- **Fix A (tied-def subreg color)**: `AMDGPUSSARegisterAllocator::color()` ~line 391 — a two-address
+  def inheriting its tied use's color must inherit `TRI->getSubReg(color, UseSubIdx)` when the tied
+  use reads a sub-register lane (V_WRITELANE_B32 / V_MOV_B32_dpp tied to one 32-bit lane of a wider
+  value), not the whole super-register. Fixes the "Operand has incorrect register class" (10) cluster
+  (7/8; permlane also needs Fix B = undef tied source). Reviewed: minimal + correct. APPLIED+built;
+  cluster verify 7/8 pass.
+- **Fix B (undef tied-def rewrite)**: `AMDGPUSSARegisterAllocator::rewriteOperands()` undef branch —
+  an undef USE tied to a def (DPP/PERMLANE `undef %N.subX(tied-def)` old source) must be rewritten to
+  the def's already-assigned physreg (`MO.setSubReg(0); MO.setReg(DefPhys)`), not an arbitrary
+  `Order.front()`, else "Tied physical registers must match" / "Two-address operands must be
+  identical". Fixes corpus class (1); with Fix A unblocks permlane. Reviewed: minimal + correct.
+- **Fix C (spiller isSpill/isReload by TSFlag)**: `AMDGPUSSARegisterSpiller.cpp` `isSpillInstr`/
+  `isReloadInstr` replaced hand-maintained S+V opcode lists (omitted AGPR/AV) with
+  `SIInstrInfo::isSpill(MI->getDesc()) && mayStore()/mayLoad()`. On gfx90a+ an `SI_SPILL_AV*_RESTORE`
+  reload was unrecognized → redef not renamed in SSA repair → vreg multi-defined → `getVRegDef`
+  assert. TSFlag covers all files/widths. Fixes corpus class `getVRegDef assumes at most one
+  definition`. Reviewed: correct + robustness improvement.
+- **CORPUS A+B+C (2026-07-13, /tmp/corpus-abc-run, 3072 tests, ssara real-tree llc):** CRASH 96->86,
+  0 PASS->fail regressions. Classes eliminated: incorrect-register-class 10->0 (A), tied-physregs 1->0
+  (B), getVRegDef-multi-def 1->0 (C); bonus Multiple-vreg-defs 5->2 (C). Residual advanced into the
+  postponed coalescer-lack class "Failed to find free physreg" 32->36. Top remaining crash class = (36)
+  Failed to find free physreg = COALESCER-LACK (postpone; e.g. bitcast diamond, see report-D). Plan:
+  green all non-coalescer classes, then build coalescer on a green tree.
+- **Colleague-fix review campaign (2026-07-13): COMMITTED, CRASH 96 -> 59, 0 PASS->fail regressions.**
+  7 fixes committed to `ssara` (each with a revert-proven SSARA guard test; corpus-gated per fix):
+    * b312be01daa9 A - SSA RA inherit sub-register of tied use's color (ra-tied-use-subreg-color.ll)
+    * 00bd2589097c B - SSA RA rewrite undef tied use to tied def physreg (ra-undef-tied-def-rewrite.ll)
+    * 7d93452def3f F - SSA RA rewrite operands inside BUNDLEs (ra-bundle-operand-rewrite.ll)
+    * 0521322a38e8 C - spiller classify spill/reload by Spill TSFlag (spill-av-reload-ssa-repair.ll)
+    * 5c027bd3b1e4 D - spiller clear per-function stack-slot maps (spill-cross-function-stackslot.ll)
+    * 733b6066a85e E - spiller ignore undef uses in physreg RP + getLiveRegs hasInterval-before-
+      getRegKind (spill-undef-physreg-pressure.ll + spill-classless-vreg-liveregs.ll)
+    * 9fef2ffac407 G - MachineLaneSSAUpdater share super-use REG_SEQUENCE per instruction, keyed
+      {UseMI,OpMask}, session-scoped (rebuildssa-superuse-shared-regseq.ll)
+  Class-by-class eliminated: incorrect-reg-class 10->0, tied-physregs 1->0, getVRegDef 1->0,
+  Invalid-Object-Idx 9->0, Register-class-not-set 6->0, Remaining-virtual-register(GWS) 6->0,
+  VOP-constant-bus 6->0, v_div_scale 4->0; Multiple-vreg-defs 5->2 (bonus from C).
+  Campaign tally: 96(dead-def) -> 86(A+B+C) -> 81(D) -> 75(E) -> 69(F) -> 59(G). SSARA lit 65/65.
+- **UPSTREAM (llvm-project worktree, 2026-07-13):** (1) branch `GCNRPTracker_fix` = the getLiveRegs
+  hasInterval-before-getRegKind reorder ported to upstream GCNRegPressure.cpp (same bug exists in
+  main); `ninja -C build/Debug check-llvm` = 46096 passed, only the 4 pre-existing MCJIT-EH failures
+  (baseline match), 0 new regressions. (2) branch `fix-splitcriticaledge-subrange-vninfo` =
+  MachineBasicBlock.cpp SplitCriticalEdge comment simplified per reviewer (perlfu): 4-line comment ->
+  "// New segment VNI must be from the subrange.".
+- **REMAINING crash classes @ CRASH 59 (postponed/deferred):** (37) Failed to find free physreg =
+  COALESCER-LACK (full categorized list in /tmp/ssara-reports/failed-to-find-free-physreg-crashes.md:
+  9 wide-bitcast diamonds, 10 AGPR/AV+MFMA, 9 spill-heavy/scavenge, 4 WWM, 5 other; see report-D for
+  the diamond root cause). Non-coalescer remainders needing dedicated per-class work: undefined physreg
+  (3: $scc-after-spill x2 + call-physreg x1), Multiple-vreg-defs (2: INLINEASM AV_32 subreg outputs -
+  RebuildSSA detects 2 VNs, renames def op, but 2 defs persist), MachineCopyPropagation (2),
+  containsInterval (2), + singletons. Plan: green all non-coalescer classes, then build coalescer.
+  Colleague fix reports live in /tmp/ssara-reports/ (report-A..D + failed-to-find-free-physreg).
+- **Fix D (spiller cross-function state leak, Invalid Object Idx)** [applied 2026-07-13]:
+  `AMDGPUSSARegisterSpiller::runOnMachineFunction` now clears `Virt2StackSlotMap` and
+  `StoredAtDefinition` per function. They are keyed by `VRegMaskPair` (per-function vreg numbers) but
+  were never cleared, so a colliding {vreg,mask} in a later function returned a stale frame index
+  (out of range for that function's FrameInfo -> getObjectAlign "Invalid Object Idx") and a dangling
+  store MI. Fixes corpus class (9). Verified across all 9 repros.
 
 ## User Preferences
 - No source changes without APPROVED: line

@@ -2992,3 +2992,67 @@ Full SSARA lit: 65 tests, 0 failures.
 - E -> spill-undef-physreg-pressure.ll (_amdgpu_ps_1_arg, gfx1010 pal GISel; E1 underflow) +
   spill-classless-vreg-liveregs.ll (v256i8_liveout, gfx906 GISel; E2 getLiveRegs).
 - G -> rebuildssa-superuse-shared-regseq.ll (v_maximumnum_f64_s_v, gfx700; "constant bus").
+
+## 2026-07-14 — sync ssara to the ff16 baseline (affinity + fold), rename PHI pass, 3 commits
+
+### Upstream formatting-check fixes (llvm-project worktree)
+- `MachineBasicBlock.cpp` SplitCriticalEdge: wrapped the over-long `SR.addSegment(LiveInterval::
+  Segment(...))` line (branch `fix-splitcriticaledge-subrange-vninfo`). Local `git-clang-format` is
+  MORE LENIENT than CI (it did not flag the original) — match CI's proposed diff EXACTLY. Pushing
+  failed first ("fetch first"): remote had merged main (diverged 1 vs 1327 commits) → `git pull
+  --rebase` then push.
+- `GCNRegPressure.cpp` getLiveRegs: reflowed the over-long "testing hasInterval first ... (absent)
+  class." comment (branch `GCNRPTracker_fix`, commit fc36784). Not on the checked-out branch — had
+  to switch branches first.
+
+### Spiller allocatable-budget cap — COMMITTED fc16 (fc1614731504)
+`AMDGPUSSARegisterSpiller::runOnMachineFunction`: `VGPRLimit/SGPRLimit = min(getMaxNum*,
+TRI->getAllocatableSet(&VGPR_32/&SGPR_32RegClass).count())` applied BEFORE the existing 10% margin.
+Root cause (SPILLER_BUDGET_FIX.md): `getMaxNumVGPRs` is the occupancy target over the WHOLE vector
+budget (gfx90a = combined VGPR+AGPR = 128) but the allocator colors into VGPR_32 only (64); the
+spiller over-budgeted ~2x, under-spilled, and `color()` aborted "Failed to find free physreg".
+`getAllocatableSet(...).count()` = the same set `RegClassInfo.getOrder()` iterates. Corpus CRASH -10,
+0 new. `TRI` already a member; no new dep.
+
+### ssara vs ssara-claude comparison (both at fc16) — WHY ssara regressed vs the ff16 baseline
+The `corpus-ff16` baseline (47 crashes, /tmp/corpus-ff16) was run on the **ssara-claude** worktree.
+Recursive diff of the two AMDGPU trees (both HEAD=fc16, only uncommitted differs) → ssara-claude has
+THREE behavioral features ssara lacked:
+1. **Spiller reload-lane-narrowing** (`getOrCreateReloadInBlock` gains `ReloadMask`; reload only the
+   lanes a use reads via getSubRegFromChannel span + in-slot byte offset + complement-lane liveness;
+   `BlockReloadCache` keyed by VRegMaskPair). **Started AFTER the baseline run (per user) → OUT OF
+   SCOPE.**
+2. **φ-affinity coloring (patch 02)** — `pickFreePhysReg` hint list + `collectPhiHints`.
+3. **PHI fold (b)** — single-real undef-PHI fold + MDT (ssara had the flag-only slice only).
+ssara alone corpus = 50 crashes vs ff16 47. +3: `urem.ll`, `wave32.ll` ("Segment is not entirely in
+range!"), `amdgcn.bitcast.576bit.ll` ("Failed to find free physreg"). Proven NOT the rename: A/B on
+urem.ll → identical assert with the PHI pass enabled AND disabled (crash is pass-independent).
+Cause = missing affinity(2) + fold(3). Reload-narrowing(1) intentionally excluded.
+
+### PHI pass rename saga
+Worktree pass was flag-only (`AMDGPUPHICoalescer` reduced to rewrite (a) only). Renamed twice:
+"coalescer" is misleading for a flag-only simplifier → interim `AMDGPUFlagUndefPHIOperands`; then
+after restoring fold (b) it does real single-real coalescing again → final **`AMDGPUSimplifyUndefPHI`**
+(user chose). DEBUG_TYPE `amdgpu-simplify-undef-phi`; flags `-amdgpu-simplify-undef-phi[-flag|-fold]`;
+stats `NumUndefFlagged`, `NumPHIsFolded`. **Kept STANDALONE** (not folded into the spiller): the pass
+mutates undef flags → invalidates LiveIntervals + AMDGPUNextUseAnalysis, which the PM recomputes for
+the spiller (pass only `setPreservesCFG`/MDT); folding into the spiller would strand a STALE NUA
+(spiller does `getAnalysis<AMDGPUNextUseAnalysisWrapper>` up front). MLI wiring for affinity was
+already present (the metric uses `MLI->getLoopDepth`).
+
+### Sync + verification
+Ported affinity coloring into ssara's allocator (kept ssara's leaner stats-only metric) + restored
+fold. Rebuilt llc; 3 previously-regressed tests recover (exit 0). Corpus (`uptodate`, jobs=32/
+timeout=180) = **CRASH 47, IDENTICAL set to ff16, all buckets match**. The single REGRESSION_OCC_OR_
+SPILL delta (`a-v-flat-atomicrmw`) is ff16's flaky TIMEOUT(1) resolving into its true bucket.
+
+### Commits (pushed) + hunk-split technique
+1. `da78e671` PHI-copy metric (stats-only). 2. `3deb087e` phi-affinity biased coloring.
+3. `80fc7d8d` AMDGPUSimplifyUndefPHI pass. Metric+affinity live in the same allocator files → split
+non-interactively: classify each `git diff` hunk by marker (affinity = collectPhiHints/phi-affinity/
+Hints/getMatchingSuperReg/...), write a metric-only subset patch, `git apply --cached` it (commit 1),
+then a whole-file `git add` stages the affinity residual after commit 1 lands (commit 2).
+
+### Report
+`SSARA/08-Worklog/corpuse/corpus-14-07-2026.md` — bucket table (Count / % of total / % of evaluated),
+evaluated subtotal 2230, skipped subtotal 850, from the `uptodate` run.
