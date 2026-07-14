@@ -69,6 +69,44 @@ SGPR spill **materialization** (writelane/readlane) is **not** done here — the
 pseudos survive until `SILowerSGPRSpills` runs after the SSA RA, when the spilled
 register is physical (see [Architecture](Architecture.md#the-two-spill-code-lowering-paths)).
 
+## Register budget: cap by allocatable-file size
+
+Each pass targets a per-class **register-pressure limit** (`VGPRLimit`,
+`SGPRLimit`). The limit must equal the number of registers the **allocator can
+actually hand out** for that class — otherwise the spiller under-spills and
+`color()` later aborts with `Failed to find free physreg` even though the spiller
+reported "fits".
+
+The limit is derived as:
+
+```cpp
+VGPRLimit = min(ST.getMaxNumVGPRs(MF),
+                TRI->getAllocatableSet(MF, &AMDGPU::VGPR_32RegClass).count());
+SGPRLimit = min(ST.getMaxNumSGPRs(MF),
+                TRI->getAllocatableSet(MF, &AMDGPU::SGPR_32RegClass).count());
+// then reserve a ~10% safety margin: limit -= limit / 10
+```
+
+**Why the `min`.** `getMaxNumVGPRs(MF)` is the occupancy/addressable target over
+the whole **vector** budget. On split-file targets (gfx90a: physically separate
+VGPR and AGPR files) that number counts VGPR+AGPR together and **exceeds the
+VGPR_32 file the allocator draws from** — a VGPR value cannot be colored into an
+AGPR (see [SSA_RA_Coloring](SSA_RA_Coloring.md#48-agpr-coloring-gap-av-class-values-are-pinned-to-vgpr)). Example (gfx90a): `getMaxNumVGPRs` = 128 → limit 116, but the allocatable
+VGPR_32 set is 64. Trusting 116 leaves genuine pressure above the 64 registers
+`color()` can place. Taking the `min` with `getAllocatableSet(RC).count()` keeps
+the spiller's target consistent with the allocator's real per-file capacity.
+
+The `getAllocatableSet(RC).count()` is exactly the size of the order
+`RegClassInfo.getOrder(RC)` that `color()` iterates, so the two stages agree by
+construction. When occupancy (not file size) is the tighter bound — unified-file
+targets, or occupancy-limited functions — the `min` keeps the smaller
+`getMaxNumVGPRs` value, so this never *raises* the budget.
+
+> Corpus: this cap alone took the SSA chain from 57 → 47 crashes (net −10, no new
+> crashes). Worklog:
+> `SPILLER_BUDGET_FIX`,
+> `NONCOALESCABLE_CLUSTER_ANALYSIS`.
+
 ## Terminology
 
 - [**VMP (VRegMaskPair)**](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/VRegMaskPair.h):
@@ -192,8 +230,43 @@ original register and merges via a PHI — zero reloads there.
 | `spillAtDefinition` | emit the stack store after the def (after PHIs if def is a PHI) |
 | `buildDomGroupsForSpill` | collect uses reachable from the kill, grouped by dominance |
 | `emitReloadsAndRepairSSA` | cut-LI availability walk → `getOrCreateReloadInBlock` → inline `repairSSAForNewDef` |
-| `getOrCreateReloadInBlock` | emit a reload redef (block-end reloads cached in `BlockReloadCache`) |
-| `insertReloadForUse` | place a reload for a specific use (PHI use → per predecessor) |
+| `getOrCreateReloadInBlock` | emit a reload redef (block-end reloads cached in `BlockReloadCache`); reloads only the requested lane slice (see *Reload narrowing*) |
+| `insertReloadForUse` | place a reload for a specific use (PHI use → per predecessor); passes the use's read-mask so only those lanes are reloaded |
+
+### Reload narrowing — reload only the lanes the use reads
+
+When a wide tuple is spilled and a use reads only a **sub-slice** (e.g. a
+`REG_SEQUENCE` operand `%r.sub6_sub7…`, or one PHI operand), reloading the whole
+tuple pulls the entire value back into registers. Several such full-width reload
+temporaries then pile up live at the reconstruction, re-inflating pressure above
+the file *after* the spiller thought it was done — a self-inflicted
+`Failed to find free physreg`.
+
+`getOrCreateReloadInBlock` takes a `ReloadMask` (default = all of `SpilledVMP`;
+`insertReloadForUse` passes the use's actual read-mask — per-operand for PHI, the
+union of reads for a non-PHI user). Only that slice is reloaded:
+
+- The **stack slot stays the full `SpilledVMP` slot** — the store side is
+  untouched; the slot is keyed by the full VMP.
+- The reload dest is narrowed to the slice's channel span, rounded up to a legal
+  AMDGPU tuple width (1..8, 16) via `getSubRegFromChannel` — `VRegMaskPair`'s
+  exact-mask `getSubReg` fails for a contiguous-but-unnamed range (e.g.
+  sub17..sub31 of a `vreg_1024`) and would silently fall back to a full reload.
+- For **VGPR/AV** reloads the in-slot position is a byte offset (channel N at byte
+  N*4), set on the restore pseudo's existing `offset` immediate (it flows into
+  `buildSpillLoadStore`'s `InstOffset`). For **SGPR** reloads (spill-to-VGPR-lane)
+  the narrowed dest subreg already selects the right lanes in `restoreSGPR`, so no
+  offset is applied.
+- The `undef`/complement preserve-mask uses the reload's actual redefined channel
+  span (which may be a few lanes wider than the request after rounding), and the
+  block reload cache key includes the mask so narrow and wide reloads coexist.
+
+> Status: correct (no regressions), but currently **inert on the corpus** — the
+> remaining physreg crashes are gated by the AGPR-coloring gap
+> ([SSA_RA_Coloring](SSA_RA_Coloring.md#48-agpr-coloring-gap-av-class-values-are-pinned-to-vgpr)),
+> which reduced VGPR pressure cannot reach. Kept as a complementary improvement;
+> retention gated on measurement. Worklog:
+> `RELOAD_NARROWING_AND_AGPR_GAP`.
 
 ### Loop-aware reload hoisting
 `adjustReloadForLoop` / `canHoistReloadTo` hoist a reload to a loop preheader when

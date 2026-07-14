@@ -272,6 +272,64 @@ flowchart TD
 > (paper §4.3), coalescing by color choice (never graph merge, to preserve
 > chordality).
 
+### 4.8 AGPR-Coloring Gap: AV-class values are pinned to VGPR
+
+On split-file targets (gfx90a+) the vector register file is physically two
+files: **VGPR** and **AGPR**. Many values are **AV-class** (VGPR-*or*-AGPR): the
+hardware/ABI permits either file. Greedy uses this to relieve pressure — when the
+VGPR file fills it places AV values in AGPRs (staged with
+`v_accvgpr_write/read`), effectively doubling the vector budget.
+
+**The SSA RA never uses the AGPR file.** Root cause: `color()` chooses the
+allocation order from the **vreg's register class**
+(`pickFreePhysReg(MRI->getRegClass(Reg), …)`), and AV values arrive already
+classed as `vgpr_32` — only the *operand constraint* is `AV_32` (e.g. an
+inline-asm `regdef:AV_32`, or an MFMA operand). Verified on
+`ds_bpermute_b32_av_av_no_vgprs`: right after `finalize-isel` the value has
+`class: vgpr_32` (0 `av_32` vreg classes); the AV flexibility lives in the
+operand constraint / register bank, recovered by greedy via
+`SIRegisterInfo::getConstrainedRegClassForOperand`. The SSA RA never consults
+operand constraints, so it hands `pickFreePhysReg` a **VGPR-only** order and the
+256-entry AGPR file sits unused while the 64-entry VGPR file exhausts →
+`Failed to find free physreg`.
+
+This is a distinct contributor to the §4.7 exhaustion class, and it is **not**
+relieved by coalescing, by the spiller budget cap ([SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md#register-budget-cap-by-allocatable-file-size)), or by narrowing reloads — those reduce
+*VGPR* pressure but never reach the AGPR file. Greedy fits the worked case with
+`NumVgprs: 64, NumAgprs: 18`; the SSA RA aborts at 64.
+
+**Partial machinery already present.** The high-water tracking classifies by the
+*chosen* physreg's file (`MaxVGPRIdx` / `MaxAGPRIdx`, the `isAGPRClass` branch),
+and `resolvePermutation` has an AGPR cycle path (scratch AGPR). So the allocator
+can *account for* AGPR-colored values — it just never *chooses* them.
+
+**Design for the fix (proposed, not yet implemented).** Give the coloring stage a
+file choice for AV-class values:
+
+1. **Derive the true allocation class from operand constraints** (intersect the
+   def + all use constraints, per `getConstrainedRegClassForOperand`) so an
+   AV-legal value is colored as `AV_*` (AGPR-inclusive order) instead of
+   `vgpr_32`. Must handle sub-registers / tuple alignment.
+2. **Per-operand file legality**: some ops require VGPR for a specific operand
+   even on an AV value (and MFMA prefers AGPR). The chosen file must satisfy
+   *every* operand.
+3. **Cross-file copies** (`v_accvgpr_read/write`) where a value's file does not
+   match an operand's requirement — greedy gets these from copy legalization; the
+   SSA RA needs its own path.
+4. **Split VGPR/AGPR pressure model** in `pickFreePhysReg` / `OccupiedRegUnits`
+   and in the spiller budget (currently the two files are treated as one budget).
+
+This is a genuine feature (estimated several hundred lines), not a quick fix.
+**Recommended first step — a small probe:** for a value that is AV-legal at
+*all* its operands (no operand forces VGPR), derive its class from the operand
+constraints and give it an AGPR-inclusive order. Such values need **no**
+cross-file copies, so steps 2–3 may be skippable for the crash cluster
+(`a-v-*`, `ds_*_a_v`, `*no_vgprs`), which is exactly this shape. Measure before
+committing to the full feature.
+
+> Worklog: `RELOAD_NARROWING_AND_AGPR_GAP`
+> (evidence + scoping), `REMAINING_CRASHES_CLASSIFICATION`.
+
 ---
 
 ## 5. Data Structures
@@ -498,7 +556,9 @@ cycle must use a scratch AGPR.
 | SGPR-spill accounting → `SILowerSGPRSpills` | ✅ Implemented |
 | **Pipeline wiring (`-amdgpu-ssa-regalloc`)** | ✅ **Done — wired in `addRegAssignAndRewriteOptimized`; corpus-tested end-to-end** |
 | Physreg exhaustion / cross-call (needs coalescer) | 🔧 Open (§4.7; ~30 crashes) |
-| PHI coalescing (paper §4.3) | 🔧 Pending (durable fix for the above) — design: [PHI_Coalescer](PHI_Coalescer.md) |
+| AGPR coloring for AV-class values (split-file targets) | 🔧 Open (§4.8; distinct contributor to exhaustion — AV values pinned to VGPR, AGPR file unused) |
+| PHI coalescing — greedy affinity (Option B + sub-reg hints) | 🟡 Done in `ssara-claude`, uncommitted; corpus-accepted (weighted φ-copies −62%, CRASH 55→47) — see [PHI_Coalescer](PHI_Coalescer.md#101-status-2026-07-14) |
+| PHI coalescing — real recoloring (paper §4.3, Option A) | 🔧 Pending (durable fix for the above; 99.8% of residual copies feasible) — design: [PHI_Coalescer](PHI_Coalescer.md) |
 | Per-class / fragmentation-aware spilling | 🔧 Proposed ([GCNUpwardRPTracker_PerClassRP](GCNUpwardRPTracker_PerClassRP.md), [Spiller_Redesign](Spiller_Redesign.md)) |
 | Loop-filter fallback (`getVMPsToSpill`) | 🔧 Pending |
 
