@@ -42,6 +42,22 @@ the chromatic number and **force a spill** (paper Fig.1: merging `d,g,f` pushes
 **chordal**, χ stays `= max clique`, and **coalescing can never introduce a
 spill.** Every design decision below serves this invariant.
 
+> **The deeper point — coloring is *already done* when this pass runs.** The
+> optimal `k`-coloring is produced by the chordal PEO `color()` pass
+> ([[SSA_RA_Coloring]]) *before* the coalescer. The coalescer **never colors and
+> never re-colors** — it only *shuffles an existing valid coloring* (permuting
+> colors already assigned) to align φ endpoints, and it **bails the instant a
+> shuffle doesn't fit**. Two consequences fall straight out of this:
+>
+> - **It cannot reopen NP-completeness.** Coloring is not being solved here; a
+>   finished, valid coloring is only being permuted. No search, no backtracking.
+> - **It cannot ever introduce a spill.** The number of colors in use never rises
+>   (a swap exchanges existing colors), so a function that fit in `k` registers
+>   before the pass still fits after.
+>
+> Keep this in mind through §5–§6: everything the Test phase does is a *bounded
+> shuffle of an already-optimal coloring*, not a coloring attempt.
+
 ---
 
 ## 3. Where it sits
@@ -138,15 +154,22 @@ Entry E_c  (candidate color c):
 
    ConflictGraph C_c            StableSet S_c (max weighted, no internal edge)
    nodes = { y, x1, x2, x3 }        ┌─────────────────────────┐
-   initial edges = interference     │  y      (anchor, w = *)  │
-   among them                       │  x1     (w = w_1)        │
-                                    │  x3     (w = w_3)        │
-        x1 ── x2                    └─────────────────────────┘
-         │                          x2 excluded here: it conflicts
-         y ── x3?                   with x1 inside C_c → cannot be c
-                                    together with x1.
+   edges = interference AMONG       │  y      (anchor, w = *)  │
+   OPERANDS only — y is isolated    │  x1     (w = w_1)        │
+   (any xi interfering with y was   │  x3     (w = w_3)        │
+   already dropped in §5.2)         └─────────────────────────┘
+
+        y   (isolated)              x2 excluded here: it conflicts
+                                    with x1 inside C_c (edge x1─x2),
+        x1 ── x2      x3            and w_1 > w_2, so the max-weighted
+                                    stable set keeps x1, drops x2.
    gain(E_c) = w_1 + w_3 (+ y's anchor weight)
 ```
+
+Note `y` has **no edge to any operand** — that is the whole point of the §5.2
+eligibility filter. The only edges in `C_c` are operand–operand interferences
+(here `x1─x2`); they decide which operands can share color `c` *with each other*,
+never whether an operand can share with `y`.
 
 As the Test phase fails to give a member color `c`, it **adds an edge into
 `C_c`**, which forces `S_c` to be recomputed smaller. Worst case `S_c` collapses
@@ -169,12 +192,14 @@ flowchart TD
 
   subgraph TEST["TEST — pop best, try to realize it"]
     T0["pop highest-gain Entry E_c"]
-    T1["virtually recolor every node in S_c to c"]
-    T2{"neighbor n already holds c?"}
-    T2 -- "no conflict" --> T3["ok, keep virtual change"]
+    T1["for EACH member u ∈ S_c (y and every selected xi):<br/>virtually recolor u to c"]
+    T2{"u has a neighbor n in the FULL<br/>interference graph holding c?"}
+    T2 -- "no / n takes u's old color<br/>(swap cascade resolves)" --> T3["keep virtual change"]
     T2 -- "n is pinned by another ω" --> T4["add edge to C_c,<br/>recompute S_c, REQUEUE"]
     T2 -- "mutual dependence (n∈ω)" --> T5["add edge uu/uv to C_c,<br/>recompute S_c, REQUEUE"]
-    T3 --> T6{"≥ 2 members would become<br/>fixed points?"}
+    T3 --> T5b{"more members in S_c?"}
+    T5b -- "yes" --> T1
+    T5b -- "no" --> T6{"≥ 2 members would become<br/>fixed points?"}
     T4 --> T0
     T5 --> T0
   end
@@ -191,10 +216,65 @@ monotonically shrinking future stable sets. In the limit `S_c = {y}` (nothing to
 recolor), so the queue drains. (Paper: "the Test-Phase always terminates, since
 in each step an edge is added to the conflict graph.")
 
-**Recursive recolor (the swap cascade):** giving `y` color `c` when neighbor `n`
-holds `c` tries to move `n` to another color, which may displace `n`'s neighbor,
-etc. This mirrors what `resolvePermutation()`/`emitSwap()` already do at
-destruction — the coalescer is deciding *which* permutations are worth having.
+**Recursive recolor applies to EVERY member of `S_c`, not just `y`.** Realizing
+an entry means recoloring *each* `u ∈ S_c` (that is `y` **and** every selected
+`xᵢ`) to `c`. The paper is explicit: "We try to change the color for each
+`u ∈ {y, x₁,…,xₘ}` to `c`." `S_c` only guarantees the members don't conflict *with
+each other* at `c` (it is stable inside `C_c`). It says **nothing** about the rest
+of the function, so each member's recolor is a separate operation that must be
+reconciled against the **full interference-graph coloring**:
+
+- For each `u ∈ S_c`, look at `u`'s neighbors **in the whole interference graph**
+  (not just the other OptUnit members). Any neighbor `n` currently holding `c`
+  collides with `u`.
+- Resolve the collision by a **swap, not a free recolor**: `n` inherits `u`'s
+  *former* color (paper: "we annotate `n` with the former color of `u`"). This may
+  in turn collide with `n`'s own neighbor, so the swap propagates recursively —
+  but every step only ever *exchanges colors already in use*, never searches for
+  a new assignment.
+- A swap that cannot be completed (`n` is pinned by another ω, or `n` is itself an
+  OptUnit member that needs `c`) is not chased further: it feeds an edge back into
+  `C_c`, shrinks `S_c`, and the entry is requeued (branches T4/T5 above).
+
+So "take care of every `x` in `S_c`'s interference" is exactly right — but the
+"care" is bounded, and that boundedness is the answer to the NP worry below.
+
+> ### Why this is NOT back to NP-complete optimal coloring
+>
+> The fear is legitimate: *arbitrary* recoloring of neighbors is graph coloring,
+> which is NP-complete. This algorithm sidesteps it three ways:
+>
+> 1. **It's a swap, not a search.** A displaced neighbor `n` gets `u`'s *old*
+>    color — a specific, already-legal color — not "some free color we go hunting
+>    for." The coloring produced by `color()` (§[[SSA_RA_Coloring]]) is already a
+>    complete, valid `k`-coloring; Test only *permutes* colors within it. Number
+>    of colors never rises, so **it can never turn a colorable function into a
+>    spill** (the invariant of §2).
+> 2. **Every failure is terminal, not backtracked.** When a swap can't complete,
+>    the algorithm does **not** try another color for `n` or explore alternatives.
+>    It gives up on that member, records an edge in `C_c`, and moves on. There is
+>    no search tree — each conflict monotonically *adds* an edge, so the process
+>    strictly descends (§"Why Test terminates"). Worst case `S_c` collapses to
+>    `{y}` and the entry is dropped.
+> 3. **It's a heuristic, and admits it.** The paper's problem
+>    (SSA-Maximize-Fixed-Points) *is* NP-complete (their Theorem 3). This is the
+>    *heuristic* that approximates it — it does not claim the optimum. It trades
+>    optimality for a polynomial, bail-out-on-conflict procedure that their
+>    measurements show still captures >95% of the optimizable copy cost.
+>
+> In short: **optimal coloring is already done** by the chordal PEO coloring
+> *before* this pass. The coalescer never re-solves coloring; it only shuffles an
+> existing valid coloring to align φ endpoints, bailing the instant a shuffle
+> doesn't fit.
+
+This is exactly what `resolvePermutation()`/`emitSwap()` already do at destruction
+— permute among assigned registers — so the coalescer is just deciding *which*
+permutations are worth having.
+
+> **Subtle point — members of `S_c` never collide with each other.** By
+> construction `S_c` is stable in `C_c`, so no two members interfere; giving them
+> all `c` is internally consistent. Every collision handled above is between an
+> `S_c` member and a **non-member** neighbor in the interference graph.
 
 ---
 
