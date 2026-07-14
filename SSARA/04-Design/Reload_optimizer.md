@@ -1,5 +1,26 @@
 # Reload Optimizer Design
 
+> **DEPRECATED — describes removed code (historical).**
+> `optimizeReloadPlacing` and its clique/NCD-hoisting have been **removed** from
+> [`AMDGPUSSARegisterSpiller`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp);
+> do not expect this function in the source. It is **superseded** by
+> dominance-ordered reload placement — see [Reload_join_phi_coalescing](Reload_join_phi_coalescing.md) and
+> [SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md#reload-placement-cut-li-dominance-ordered-redef-only).
+>
+> **Why removed.** Dominance-order processing makes a dominating reload visible to
+> dominated uses, so intra-chain sharing is free without an optimizer. The only
+> capability dropped is **NCD-hoisting** (sharing one reload among sibling uses by
+> placing it at a common dominator *above* them) — that raises RP in the dominator
+> region, against the spill's purpose, and was usually blocked anyway. It may
+> return later as an optional low-RP-only optimization.
+>
+> **Note — not the same as loop hoisting.** The surviving helpers
+> `adjustReloadForLoop` / `canHoistReloadTo` / `walkPathsToUses` still exist and
+> hoist a reload to a **loop preheader** (a distinct, still-active optimization);
+> only the sibling-NCD reload *optimizer* below is gone.
+>
+> The rest of this document is retained for historical context only.
+
 ## Purpose
 
 The `optimizeReloadPlacing` function minimizes reload count by intelligently **hoisting reloads to common dominators** of multiple uses. Instead of emitting a reload before each use, we find opportunities to share a single reload among multiple uses when register pressure (RP) permits.

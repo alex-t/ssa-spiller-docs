@@ -1,174 +1,192 @@
 # MachineLaneSSAUpdater — Design
 
-> Obsidian note for the **lane-aware SSA repair utility** used on Machine IR.  
-> Primary client today: **AMDGPU SSA Spiller** (`AMDGPUSSARegisterSpiller`).
+> Lane-aware **SSA repair** utility for Machine IR. Clients: **RebuildSSA**
+> (`AMDGPURebuildSSA`) and the **AMDGPU SSA Spiller** (`AMDGPUSSARegisterSpiller`).
+
+> **Design (2026-07):** ownership is decided by **reaching-VNInfo identity** read
+> from a **frozen deep copy** of `OrigVReg`'s `LiveInterval`, not by dominance and
+> not by an iterated dominance frontier. All the old IDF machinery
+> (`getPrunedIDF`, `computePrunedIDF`, `IDFCache`, `repairSSAForReload`,
+> `defDominatesUse`, `RenamedLaneDefs`) has been **removed**.
 
 ## Source mapping
 
-- Commit: `45385c6f5f00`
-- Header: [MachineLaneSSAUpdater.h](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/include/llvm/CodeGen/MachineLaneSSAUpdater.h)
-- Impl: [MachineLaneSSAUpdater.cpp](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp)
+- Header: [`MachineLaneSSAUpdater.h`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/include/llvm/CodeGen/MachineLaneSSAUpdater.h)
+- Impl: [`MachineLaneSSAUpdater.cpp`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp)
+- Upstream PR: [#163421](https://github.com/llvm/llvm-project/pull/163421)
 
 ## Problem statement
 
-Many MachineIR transformations must **insert a new definition** of an existing virtual register, which violates SSA:
-- Reload inserted before a use (`loadRegFromStackSlot` writes into the original vreg).
-- Other transforms that want to “overwrite” a vreg temporarily.
+A transformation inserts a **new definition** of an existing virtual register,
+violating SSA:
+- a **reload** before a use (`loadRegFromStackSlot` writes `OrigVReg`), or
+- **RebuildSSA** re-establishing SSA over post-PHIElimination multi-def vregs.
 
-We need to:
-1. Replace that illegal redefinition with a *fresh* vreg (new SSA name).
-2. Preserve lane/subregister semantics.
-3. Insert PHIs where multiple paths merge.
-4. Rewrite reachable/dominated uses to the correct SSA name(s).
-5. Keep LiveIntervals consistent.
+The updater must, per new def:
+1. give it a **fresh** SSA name (new vreg),
+2. preserve lane / subregister semantics,
+3. insert **PHIs** where reaching values merge,
+4. rewrite the uses it reaches to the correct name(s),
+5. keep `LiveIntervals` consistent.
 
-## High-level API
-
-### `repairSSAForNewDef`
-
-Code: [repairSSAForNewDef](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp#L53-L119)
+## Public API
 
 ```cpp
-Register repairSSAForNewDef(MachineInstr &NewDefMI,
-                            Register OrigVReg,
-                            SmallVectorImpl<MachineOperand*> &PHIRegDefOps);
+// Replace a new (SSA-violating) def of OrigVReg with a fresh vreg and repair SSA.
+// Returns the fresh vreg; fills PHIRegDefOps with the def operands of any PHIs
+// created (the spiller uses this for its ReloadedRegs workaround).
+Register repairSSAForNewDef(MachineInstr &NewDefMI, Register OrigVReg,
+                            SmallVectorImpl<MachineOperand *> &PHIRegDefOps);
+
+// Invalidate the per-OrigVReg session so the next repair re-freezes the oracle.
+// Required when new defs (e.g. spiller reloads) are added between repair calls.
+void resetSession();
+
+// CFG reachability def -> use (successor-closure BFS; SSA ⇒ exact). Used by the
+// spiller to decide which uses a spill affects. No dominance frontier.
+bool isUseReachableFromDef(MachineInstr *DefMI, MachineInstr *UseMI,
+                           Register OrigVReg);
 ```
 
-**Contract:** `NewDefMI` must contain a *def* operand that currently defines `OrigVReg` (illegal SSA). The updater will:
-- Create a new vreg for the definition,
-- patch `NewDefMI` to define that vreg instead,
-- insert lane-aware PHIs as needed,
-- rewrite uses,
-- and return the new SSA vreg.
+`rewriteDominatedUses` / `rewriteUseReaching` are the internal use-rewrite
+helpers (public for testing).
 
-`PHIRegDefOps` is filled with **def operands** of PHI result registers created during repair.  
-This is used by the SSA spiller as a temporary workaround for “static NUA limitation” (see below).
+### Finding the def operand
+`repairSSAForNewDef` locates the `OrigVReg` def by scanning **all** operands
+filtered on the `isDef` flag — **not** `MI.defs()`, whose leading-explicit-def
+range is empty for variadic instructions (INLINEASM def operands sit after the asm
+string and flag immediates). See commit `400c67924fc6`.
 
-### `isUseReachableFromDef`
+## The reaching-VNInfo oracle (frozen LiveInterval)
 
-Code: [isUseReachableFromDef](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/CodeGen/MachineLaneSSAUpdater.cpp#L769-L879)
+At session start (first `repairSSAForNewDef` for a new `OrigVReg`, or after
+`resetSession()`) the updater takes a **deep copy** of `LI(OrigVReg)` into
+`FrozenOrigLI` (own `BumpPtrAllocator`), preserving every VNInfo's def `SlotIndex`
+and `isPHIDef` flag plus all subranges.
 
-Two overloads:
-- `(MachineInstr *DefMI, MachineInstr *UseMI, Register OrigVReg, LaneBitmask DefMask)`
-- `(MachineOperand &DefOp, MachineOperand &UseOp, Register OrigVReg)`
-
-This is the helper used by the SSA spiller to classify non-dominated uses as "reachable" via pruned IDF.
-
-## Core algorithm (repairSSAForNewDef)
+**Why a frozen copy is mandatory.** Renaming a def to a fresh vreg **strips that
+def's VNInfo from the live interval** (recomputed during repair). So the live
+`LI(OrigVReg)` degrades as the session proceeds and cannot answer "what value
+reached this use originally?". The frozen copy is the stable oracle; the live
+interval is only recomputed to absorb changes. (The spiller's reload-**placement**
+phase uses a *different*, per-decision cut copy — see
+[Decisions](Decisions.md#two-phases-and-which-interval-each-one-queries).)
 
 ```mermaid
 flowchart TD
-  A["NewDefMI illegally defines OrigVReg"] --> B["Compute DefMask from def operand (subreg -> lane mask; else max lanes)"]
-  B --> C["Create NewSSAVReg (RC: full or subreg class)"]
-  C --> D["Patch NewDefMI def: OrigVReg -> NewSSAVReg; clear subreg if narrowed"]
-  D --> E["Index new MI in SlotIndexes / LiveIntervals"]
-  E --> F["performSSARepair(NewSSAVReg, OrigVReg, DefMask, DefBB)"]
-  F --> G["Return NewSSAVReg; report PHI def operands via PHIRegDefOps"]
+    A["NewDefMI illegally (re)defines OrigVReg"] --> B["session start? freeze FrozenOrigLI = deep copy of live LI(OrigVReg)"]
+    B --> C["create fresh NewSSAVReg (full RC, or subreg RC for a partial def)"]
+    C --> D["patch NewDefMI to define NewSSAVReg (clear subreg if narrowed)"]
+    D --> E["index the instr in SlotIndexes / LiveIntervals"]
+    E --> F["performSSARepair: place PHIs + rewrite uses (queries FrozenOrigLI)"]
+    F --> G["recompute live LI(OrigVReg); return NewSSAVReg + PHI def operands"]
+
+    style B fill:#e2e3e5,stroke:#6c757d,color:#000
+    style F fill:#fff3cd,stroke:#ffc107,color:#000
+    style C fill:#d4edda,stroke:#28a745,color:#000
 ```
 
-### Key lane-awareness points
+## PHI placement — from frozen `isPHIDef` VNInfos (no IDF)
 
-- **DefMask derivation**
-  - If the defining operand has a `SubRegIdx`, we use `TRI.getSubRegIndexLaneMask(SubRegIdx)`.
-  - Otherwise we use `MRI.getMaxLaneMaskForVReg(OrigVReg)`.
+PHIs are **not** computed from an iterated dominance frontier. `LiveIntervalCalc`
+already recorded, in `FrozenOrigLI`, an `isPHIDef` VNInfo at exactly each merge
+point (per lane, via subranges) — that *is* the pruned IDF, for free. Placement:
 
-- **Register class selection for new SSA vreg**
-  - For a subreg-def, the updater creates a new vreg in the **subregister RC** (`TRI.getSubRegisterClass(OrigRC, SubRegIdx)`).
-  - For full defs, it uses `MRI.getRegClass(OrigVReg)`.
-
-This matches the current implementation in `MachineLaneSSAUpdater.cpp` (see `repairSSAForNewDef`).
-
-## PHI placement and reachability
-
-### Pruned Iterated Dominance Frontier (IDF)
-
-PHI placement uses **iterated dominance frontier**, but prunes blocks using liveness:
-- Compute IDF for the definition block(s).
-- Intersect with blocks where `OrigVReg` lanes (per `DefMask`) are live-in.
-
-This is also what backs `isUseReachableFromDef`:
-- If the def dominates the use, reachable immediately.
-- Otherwise compute pruned IDF and check whether the PHI predecessor block is in IDF or dominated by some IDF block.
+- For each subrange overlapping the def mask, for each `isPHIDef` VNInfo, create
+  **one PHI** at that merge block for that lane group (`createPHIInBlockReaching`,
+  deduped per `(block, lane)`).
+- Each PHI predecessor operand is resolved from the frozen oracle: if a renamed
+  real def reaches that edge, use it; otherwise emit an `OrigVReg` **placeholder**
+  (patched later) or an `undef` source when the lane has no reaching value on that
+  edge (**placeholder-then-patch**).
 
 ```mermaid
 flowchart TD
-  Def["DefBB"] --> IDF["IDF(DefBB)"]
-  IDF --> LivePrune["Prune by LiveIn(OrigVReg lanes)"]
-  LivePrune --> PhiSites["Insert PHIs in remaining blocks"]
+    FR["FrozenOrigLI subranges"] --> PD["for each isPHIDef VNInfo (a real merge point)"]
+    PD --> PHI["create one PHI per (block, lane group)"]
+    PHI --> OPS["each pred operand: renamed reaching def, OrigVReg placeholder, or undef"]
+
+    style PD fill:#fff3cd,stroke:#ffc107,color:#000
+    style PHI fill:#d4edda,stroke:#28a745,color:#000
 ```
 
-### IDF caching
-`getPrunedIDF` caches IDF results keyed by:
-- `(OrigVReg, LaneMask, DefBlockNum)`
+## Use rewriting — ownership by reaching-VNInfo identity
 
-This avoids recomputing IDF repeatedly (important for repeated reachability tests in the spiller).
+For each use of `OrigVReg`, `rewriteUseReaching` asks the frozen oracle for the
+reaching VNInfo (per lane) at the use, and this def **owns** exactly the lanes
+whose reaching value *is this def's VNInfo*. Owned lanes are rewritten to the
+fresh vreg; a partial-owning use is rebuilt with a `REG_SEQUENCE` (owned lanes
+from the fresh vreg, the rest from the placeholder/original).
 
-## Use rewriting
+Two subtleties that were bugs (now invariants):
 
-The updater rewrites **dominated uses** of `OrigVReg` to:
-- the new SSA vreg for the new definition, and
-- each PHI-result SSA vreg produced during repair.
-
-When a use requires a **superset lane mask**, the updater may synthesize a `REG_SEQUENCE` (only when needed).
+- **Tied uses query at the base index.** A tied use is read *before* the
+  instruction's own def. For an early-clobber two-address def (e.g.
+  `V_WMMA_*_twoaddr` accumulators) the def VNInfo sits at the early-clobber reg
+  slot, so a reg-slot query would resolve to the instruction's *own* def and leave
+  the tied use dangling. `rewriteUseReaching` queries a tied use at
+  `getInstructionIndex(UseMI).getBaseIndex()` (gated on `MO.isTied()`); non-tied
+  uses stay at `getRegSlot()`. `DefSlot` matching stays at `getRegSlot(EC)`. See
+  `FIX_REPORT_wmma-ec-tied-use_2026-07-10`.
+- **Never-defined padding lanes are sourced `undef`.** When a value lives in an
+  oversized class (e.g. a 320-/384-/448-bit value in `sgpr_512`),
+  `LiveIntervalCalc` fabricates a PHI-def subrange over the never-written padding
+  lanes. A reaching value that is such a **PHI-def not backed by any real
+  (non-PHI, non-undef) def** must be treated as `undef`, not as a live placeholder
+  that nothing ever patches. The reaching-value query is restricted to lanes with
+  a real establishing def; padding routes to the undef path. The direct-subreg
+  fast path is also gated on the subreg index being **legal for the register
+  class** (`sgpr_512` has no single `sub10_.._sub15` index), else it falls back to
+  class-legal covering subregs. See
+  `FIX_REPORT_bitcast-oversized-padding_2026-07-10`.
+- **Loop back-edge self-reference.** `rewriteDominatedUses` must **not** skip the
+  case `UseMI == DefMI` when `DefMI` is a PHI: a loop-carried PHI's own back-edge
+  operand is a legitimate self-reference and must be rewritten. See commit
+  `fad0fc8a00d7`.
 
 ## LiveIntervals handling
 
-- The new definition MI is inserted into LIS maps immediately.
-- After repair, the updater renumbers values for the new intervals.
-- It **recomputes** the original vreg interval after repair to account for new PHI operands.
+- The new def MI is inserted into LIS maps immediately.
+- After repair, values for the new intervals are renumbered.
+- `LI(OrigVReg)` is **recomputed** (not `shrinkToUses`-d) to account for new PHI
+  operands: `shrinkToUses` mismodels PHI-operand liveness (a PHI operand is live at
+  the *end of its predecessor*, not at the PHI). `createAndComputeVirtRegInterval`
+  yields correct minimal liveness here.
 
-### Important: no shrinkToUses on OrigVReg
-Current implementation intentionally avoids `shrinkToUses()` on `OrigVReg` after recomputation because
-`shrinkToUses` does not correctly model PHI operand liveness (PHI uses are live at the end of predecessor blocks).
-Recomputation via `createAndComputeVirtRegInterval` already yields correct minimal liveness in this context.
+## Integration with the AMDGPU SSA Spiller
 
-## Integration with AMDGPU SSA Spiller
-
-The spiller emits reloads that temporarily define `OrigVReg`, then calls:
+The spiller's reloads redefine `OrigVReg`; after placing all of them it repairs
+SSA inline, one call per reload redef:
 
 ```cpp
-SmallVector<MachineOperand*> PHIRegDefOps;
-Register NewVReg = SSAUpdater->repairSSAForNewDef(*ReloadMI, OrigVReg, PHIRegDefOps);
+SSAUpdater->resetSession();                 // force a fresh frozen oracle
+for (MachineInstr *RMI : ReloadDefs) {
+  SmallVector<MachineOperand *> PHIDefs;
+  SSAUpdater->repairSSAForNewDef(*RMI, SpilledReg, PHIDefs);
+  // record renamed reload vreg in ReloadedRegs (static-NUA workaround)
+}
 ```
 
-The spiller records `PHIRegDefOps` into a set (`ReloadedRegs`) to avoid selecting those newly-created vregs
-as spill candidates under the **static NUA limitation**.
+`resetSession()` is essential: the updater caches `FrozenOrigLI` per `OrigVReg`
+across the spiller's incremental spills; without a reset the oracle would miss the
+newly added reload redefs (leaving dead reloads). See
+[SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md#reload-placement-cut-li-dominance-ordered-redef-only).
 
-## Static NUA limitation (why PHIRegDefOps exists)
+The `PHIRegDefOps` out-parameter feeds the spiller's `ReloadedRegs` set (the
+[static-NUA](NextUseAnalysis.md) workaround: exclude spilling-created vregs from
+spill-candidate selection).
 
-NUA runs before spilling, so vregs created during spilling (reload vregs + PHI results) have no next-use entries,
-and can be treated as “dead”, causing immediate re-spills and no RP decrease.
+## Removed (do not look for in the source)
 
-Temporary workaround:
-- Track all vregs created by reload SSA repair (including PHI results).
-- Filter them out from the Active set when selecting spill candidates.
+`getPrunedIDF` · `computePrunedIDF` · `IDFCache` · `repairSSAForReload` ·
+`createPHIInBlock` (dominance) · `defDominatesUse` · `findRenamedReachingDef` ·
+`RenamedLaneDefs` · the `UseReachingOracle` flag. Superseded by the frozen
+reaching-VNInfo oracle above.
 
-See: `Static_NUA_limitation.md`.
+## Related
 
-## Critical: LiveInterval must be killed before SSA repair
-
-### Problem: [SSA Repairing Disorder](../08-Worklog/issues/SSA_Spiller/SSA_Repairing_Disorder.md)
-
-When multiple dominated uses exist in a diamond CFG, SSAUpdater may incorrectly merge 
-`{reload, original_spilled_value}` because it sees the original value as "available" 
-via LiveIntervals even though it was logically spilled.
-
-### Solution (implemented in SSA Spiller)
-
-**Before** calling `repairSSAForNewDef`, the spiller must:
-1. Kill the original LiveInterval from the spill point onward
-2. Cut the interval in all blocks dominated by the spill block
-
-This ensures SSAUpdater cannot see the original value as available, and will only 
-merge reloaded values in PHIs.
-
-See: [Design Change: Prevent SSA Repair Disorder](Decisions.md#design-change-prevent-ssa-repair-disorder-by-killing-spilled-liveintervals-in-dominated-region)
-
----
-
-## Open questions / TODOs
-
-- Decide long-term NUA strategy:
-  - sentinel "unknown distance" value, and/or
-  - on-demand NUA recomputation for new vregs.
-- Add post-repair verification hooks (`MF.verify()` / `LIS.verify()`) behind a debug flag if seen useful.
+- [Reload_join_phi_coalescing](Reload_join_phi_coalescing.md) — the reload-placement theory that drives the
+  spiller's calls into this updater.
+- [Decisions](Decisions.md#two-phases-and-which-interval-each-one-queries) — live vs frozen
+  interval usage across placement and reconstruction.
+- [SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md) · [Architecture](Architecture.md).

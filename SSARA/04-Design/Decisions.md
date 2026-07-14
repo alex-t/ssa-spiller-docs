@@ -1,187 +1,245 @@
 # Design Decisions
 
+Durable design decisions for the SSA register-allocation stack and the rationale
+behind them. Superseded decisions are kept at the bottom for history.
+
+---
+
 ## Store at Definition
-Chosen over:
-- WWM wrapping
-- EWF reload placement
 
-Reason:
-Correctness, simplicity, no SGPR overhead.
+Spill stores are emitted right after the value's definition (EXEC full), not at
+the high-pressure point.
 
----
+**Chosen over:** WWM-wrapping the store; EXEC-aware reload placement.
+**Reason:** correctness (no EXEC drift in divergent control flow), simplicity, no
+SGPR overhead. See [SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md#spill-candidate-selection-belady-lane-splitting).
 
-## Deferred LiveInterval Pruning
-Shrink only after:
-- all reloads placed
-- SSA repaired
+**PHI-def sub-rule.** When the stored value's def is a PHI, insert the store at
+`getFirstNonPHI()`, not `std::next(PHI)`, so all PHIs stay contiguous at the block
+top. See `FIX_REPORT_spillAtDefinition-phi-order_2026-07-10`.
 
 ---
 
-# PHI-Aware Use Rewriting (Supersedes Interval Killing)
+## Reloads Are Redefs, Repaired Inline
 
-## Context
+A reload **redefines `OrigVReg`** (a transient SSA violation) and is repaired
+**inline** by [MachineLaneSSAUpdater](MachineLaneSSAUpdater.md) (reaching-VNI reconstruction), which also
+inserts the merge PHIs. The spiller therefore returns SSA and needs **no second
+`RebuildSSA`** pass after it.
 
-Earlier design attempted to prevent SSA repair disorder by **killing the spilled register's LiveInterval** in the CFG subgraph dominated by the spill point. This section documents why that approach was abandoned and the new design that supersedes it.
+**Reason:** one reconstruction engine for both `RebuildSSA` and the spiller; the
+reload's PHIs fall out of the recomputed `isPHIDef` VNInfos for free. See
+[Reload_join_phi_coalescing](Reload_join_phi_coalescing.md).
 
-## Original Problem: SSA Repair Disorder
+---
 
-If a spill point is in the NCD and there are dominated uses both:
-- in one branch (a DF child), and
-- later in the join block,
+## Reload Placement: Cut-LI + Dominance-Ordered (No Optimizer)
 
-then processing the branch dominated-use first may cause SSAUpdater to insert a PHI at the join that merges:
-- reloaded value from the processed path, and
-- original (spilled) value from the other path.
+Reload placement decides, per use, whether the spilled value is still available;
+a use with no reaching value gets a reload, a use already reached by the original
+or a dominating reload gets none, and differing merges become PHIs automatically.
+Processing uses in **dominance order** makes a dominating reload visible to
+dominated uses, so intra-chain sharing is free — no reload optimizer.
+
+**Chosen over:** the earlier Pruned-IDF PHI-first strategy + NCD/clique reload
+optimizer + `fixPathologicalPHIs`.
+**Reason:** NCD-hoisting raises RP in the dominator region (against the spill's
+purpose) and was usually blocked anyway. Full rationale: [Reload_join_phi_coalescing](Reload_join_phi_coalescing.md).
+
+### Two phases, and which interval each one queries
+
+Spilling one value runs two phases. Both consult a **frozen snapshot** as the
+query oracle rather than the **live `LI(OrigVReg)`** (the interval LiveIntervals
+owns): the live interval is either about to be edited or is being mutated by
+renaming, so it is only ever *recomputed to absorb changes*, never queried
+directly and never surgically cut.
+
+**Phase 1 — reload placement.** *Purpose:* decide where reloads are needed and
+emit them. Each reload is written as a redef of `OrigVReg`.
+*Steps, per use in dominance order* (`emitReloadsAndRepairSSA` / `NeedsReload`):
+1. **Recompute** the live `LI(OrigVReg)` so it includes the reload redefs placed
+   so far (`removeInterval` + `createAndComputeVirtRegInterval`).
+2. Take a **local deep copy `Cut`** and **prune `Cut` at the kill** (the live
+   interval is *never* pruned).
+3. **Query `Cut`**: if a spilled lane has no reaching value on some incoming edge,
+   the use is in the freed region → emit a reload; otherwise the original or a
+   dominating reload still covers it → nothing.
+`Cut` is thrown away after each use; placing a reload leaves the live interval
+stale until the next iteration's step 1.
+
+**Phase 2 — SSA reconstruction.** *Purpose:* Phase 1 left `OrigVReg` with
+**several defs** (its original def plus every reload redef) — that is not SSA.
+Phase 2 turns it back into SSA: give each reload its own single-def name, point
+every use at the correct name, and merge divergent names with PHIs.
+*Steps* (a final recompute, then `repairSSAForNewDef` once per reload redef):
+1. **Recompute** the live `LI(OrigVReg)` once more so it reflects **all** reloads;
+   `resetSession()` then **freezes `FrozenOrigLI`** (a deep copy) as the oracle.
+2. For each reload redef: **rename** its def to a fresh SSA vreg. Renaming
+   **strips that def's VNInfo from the live interval**, which is exactly why the
+   live interval can no longer be the oracle mid-session.
+3. **Query `FrozenOrigLI`** for the reaching value at each use, and for its
+   `isPHIDef` merge points.
+4. **Rewrite** each dominated use to the reaching fresh vreg (or the original),
+   and **insert a PHI** at every merge where the reaching values differ.
+5. A final recompute leaves the live interval matching the new SSA use graph.
+
+Result: SSA is restored (`SSAInvalidated` cleared), so the allocator runs with no
+second `RebuildSSA`.
 
 ```mermaid
 flowchart TD
-    S["bb0: spill x"] -->|cond| U1["bb1: use x (dominated)"]
+    subgraph P1["Phase 1 — reload placement (decide + emit reloads)"]
+        R1["recompute live LI(x)<br/>(absorbs reloads placed so far)"]
+        C1["deep-copy → Cut, prune Cut at the kill"]
+        Q1["QUERY Cut: is this use in the freed region?"]
+        I1["yes → emit reload redef of x (edits MIR)"]
+        R1 --> C1 --> Q1 --> I1
+        I1 -.->|next use: live LI now stale → recompute| R1
+    end
+
+    P1 --> F["final recompute live LI(x)<br/>(absorbs ALL reloads)"]
+
+    subgraph P2["Phase 2 — SSA reconstruction (x now has many defs → restore SSA)"]
+        FR["resetSession → freeze FrozenOrigLI = deep copy of live LI(x)"]
+        RN["per reload: rename def → fresh vreg<br/>(STRIPS its VNInfo from live LI)"]
+        Q2["QUERY FrozenOrigLI: reaching value + isPHIDef merges"]
+        WR["rewrite dominated uses to fresh vreg;<br/>insert PHIs at differing merges"]
+        FR --> RN --> Q2 --> WR
+    end
+
+    F --> P2
+    P2 --> DONE["final recompute live LI(x)<br/>(matches new SSA use graph)"]
+
+    style Q1 fill:#fff3cd,stroke:#ffc107,color:#000
+    style Q2 fill:#fff3cd,stroke:#ffc107,color:#000
+    style C1 fill:#e2e3e5,stroke:#6c757d,color:#000
+    style FR fill:#e2e3e5,stroke:#6c757d,color:#000
+    style R1 fill:#d4edda,stroke:#28a745,color:#000
+    style F fill:#d4edda,stroke:#28a745,color:#000
+    style DONE fill:#d4edda,stroke:#28a745,color:#000
+```
+
+Legend: green = the **live** `LI(x)` being recomputed to absorb reloads; grey = a
+**frozen snapshot** derived from it (`Cut` for placement, `FrozenOrigLI` for
+reconstruction); yellow = the **query** step — always against a snapshot, never
+the live interval.
+
+---
+
+## Coloring Never Inserts Instructions
+
+Coloring is a pure assignment; **all** spill/reload placement lives in the
+spiller. Spill-on-placement-failure inside coloring is forbidden.
+
+**Reason:** correct spill/reload on AMDGPU needs a consistent EXEC mask
+($\mathrm{EXEC}_{\text{spill}} = \mathrm{EXEC}_{\text{reload}}$) or WWM; after SI
+control flow is lowered, finding such a point needs full exec-mask analysis and
+is fragile. The early spiller makes that decision once. Consequence: coloring
+must be guaranteed to succeed before it starts. See
+[Spiller_Redesign](Spiller_Redesign.md#1-motivation-the-hard-invariant).
+
+---
+
+## Width-Descending PEO Coloring; No Separate Splitter
+
+Coloring runs one dominance-tree walk per distinct register width, widest first,
+so wide tuples see an unfragmented file and narrow values fill the gaps. A
+dedicated live-range **splitter** was implemented and then removed — the
+width-descending coloring already reuses freed slots at def points.
+
+**Reason:** fragmentation avoidance for AMDGPU's wide (128/256/512-bit) tuples,
+without O(V²) interference-graph construction or a separate splitter pass. See
+[SSA_RA_Coloring](SSA_RA_Coloring.md#4-algorithm-width-descending-multi-pass-coloring) and
+[SSA_RA_Coloring](SSA_RA_Coloring.md#d3-splitter-removal).
+
+---
+
+## Tied `undef` Self-Ties Color Like Ordinary Defs
+
+In `color()`, a tied use that is `undef` (the DPP "old" source `%N = V_..._dpp
+undef %N, ...`, a D16 load's untouched half, a MIX passthrough) has no earlier
+color to inherit — the def is colored via `pickFreePhysReg`, and `rewriteOperands`
+gives the self-tied use the same physreg. The tied-use-already-colored path is
+kept for genuine two-address defs; the tied-uncolored-non-`undef` case is a hard
+failure.
+
+**Reason:** the tied source is a don't-care, so there is nothing to inherit;
+coloring it as a normal def is correct and preserves two-address form. See
+[SSA_RA_Coloring](SSA_RA_Coloring.md#46-tied-operands).
+
+---
+
+## Deferred LiveInterval Shrinking
+
+Live intervals are recomputed/shrunk only **after** all reloads are placed and SSA
+is repaired — never before use rewriting (see the superseded interval-killing
+note below for why premature surgery is wrong).
+
+---
+
+## SGPR Spill Accounting vs Materialization Split
+
+The spiller only **accounts** for the VGPR lanes that SGPR spills will need
+(`countSGPRSpillVGPRs()` → `VGPRLimit -= N`); materialization to
+writelane/readlane happens later in `SILowerSGPRSpills`, once SGPRs are physical.
+
+**Reason:** materializing pre-coloring would need the physical register (a
+`SGPRSpillBuilder` on a virtual register crashes). See
+[Architecture](Architecture.md#the-two-spill-code-lowering-paths).
+
+---
+
+## Static Next-Use-Analysis Limitation → `ReloadedRegs`
+
+NUA runs before spilling, so vregs it never saw (reload redefs, reconstruction
+PHIs) have no next-use entry and could be treated as "dead" and re-spilled with no
+RP relief. Workaround: track spilling-created vregs in `ReloadedRegs` and exclude
+them from the Active candidate set. `repairSSAForNewDef` fills a vector of inserted
+PHI def operands to support this. See [NextUseAnalysis](NextUseAnalysis.md) and
+[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md#integration-with-the-amdgpu-ssa-spiller).
+
+---
+
+# Superseded Decisions (history)
+
+## SSA Repair Disorder — solved by the cut LiveInterval
+
+**Original problem.** With a spill point in a diamond and dominated uses in both a
+branch and the join, processing the branch use first could make the SSA updater
+merge, at the join, the reloaded value with the **original (already-spilled)**
+value from the clean path — which is not a valid SSA value there.
+
+```mermaid
+flowchart TD
+    S["bb0: spill x"] -->|cond| U1["bb1: use x"]
     S -->|!cond| B2["bb2: no use"]
-    U1 --> J["bb3: join / use x (dominated)"]
+    U1 --> J["bb3: join / use x"]
     B2 --> J
+
+    style S fill:#fff3cd,stroke:#ffc107,color:#000
+    style J fill:#cce5ff,stroke:#004085,color:#000
 ```
 
-**Why it's wrong:** `x` was already spilled in `bb0`, so `x` is not a valid SSA value flowing into `bb3` along the "clean" path.
+**Rejected fix — interval killing.** An early approach manually "killed" the
+spilled *live* interval in the region dominated by the spill
+(`cutFromLiveRange`, `killIntervalInDominatedRegion`) to hide the original from
+the updater. It was abandoned:
+- it made IDF see the value as dead → empty IDF → **no join PHI** → redundant
+  reloads (3 instead of 2 in a diamond);
+- it imposed liveness as a **precondition** rather than a consequence of use
+  rewriting — order-dependent, and it fought the verifier ("doesn't live at use").
 
-## Failed Approach: Interval Killing
+**Current solution — cut a *frozen copy*, never the live interval.** As detailed
+in [Two phases, and which interval each one queries](#two-phases-and-which-interval-each-one-queries)
+above: reload placement queries a pruned deep **copy** (`Cut`), and reconstruction
+queries a frozen deep **copy** (`FrozenOrigLI`); the live LiveIntervals interval
+is only ever *recomputed* (to absorb reloads), never surgically pruned. See
+[Reload_join_phi_coalescing](Reload_join_phi_coalescing.md#3-availability-via-a-cut-liveinterval-no-dominance-computation).
 
-The original fix attempted to "kill" the spilled LiveInterval from the spill point onward in all dominated blocks, preventing SSAUpdater from seeing `x` as available.
-
-### Issues with Interval Killing
-
-#### Issue 1: Redundant Reloads in Diamond CFG
-
-When the spilled register is artificially killed, it appears dead in IDF computation. This leads to **empty IDF** and **no PHI insertion** at join points, causing redundant reloads:
-
-```mermaid
-flowchart TD
-    subgraph "With Interval Killing (WRONG)"
-        K1["bb1: spill x (killed in dominated region)"]
-        K7["bb7: reload %53<br/>use %53"]
-        K8["bb8: reload %54<br/>use %54"]
-        K9["bb9: reload %55 ← REDUNDANT!<br/>use %55"]
-        K1 --> K7
-        K1 --> K8
-        K7 --> K9
-        K8 --> K9
-    end
-```
-
-**Problem**: We have 3 reloads instead of 2. The reload in bb9 is explicitly wrong because:
-- Reloaded values `%53` and `%54` already exist from both paths
-- IDF is empty (x appears dead) → no PHI inserted
-- Use in bb9 sees no available value → triggers another reload
-
-**Correct behavior** (with PHI):
-```mermaid
-flowchart TD
-    subgraph "Without Interval Killing (CORRECT)"
-        N1["bb1: spill x"]
-        N7["bb7: reload %53<br/>use %53"]
-        N8["bb8: reload %54<br/>use %54"]
-        N9["bb9: %z = PHI(%53, bb7, %54, bb8)<br/>use %z"]
-        N1 --> N7
-        N1 --> N8
-        N7 --> N9
-        N8 --> N9
-    end
-```
-
-Only 2 reloads, with PHI merging at join point.
-
-#### Issue 2: Conceptual Violation - Artificial Liveness Manipulation
-
-**Principle**: A spilled register should become dead naturally after:
-1. All uses are replaced with reloaded values
-2. LiveInterval is recomputed via `shrinkToUses`
-
-Artificially killing the interval **before** use replacement misleads SSA machinery:
-- IDF computation sees incorrect liveness
-- SSAUpdater cannot reason about correct value flow
-- Results depend on processing order rather than CFG semantics
-
-The spilled register's liveness should be a **consequence** of use replacement, not an artificially imposed **precondition**.
-
-#### Issue 3: Too Complex Design - Manual LiveInterval Surgery
-
-The interval killing approach required manually cutting LiveRange segments and subranges (`cutFromLiveRange`, `killIntervalInDominatedRegion`) to avoid machine verifier errors like *"Doesn't live at use"*.
-
-**When you have to fight the verifier, you're on the wrong track.**
-
-The need for manual LiveInterval manipulation to satisfy verification suggests the design contradicts LLVM's SSA semantics rather than working with them.
-
----
-
-## New Design: PHI-Aware Use Rewriting (No Interval Killing)
-
-### Key Insight: `defDominatesUse` Handles PHI Operands Correctly
-
-The `MachineLaneSSAUpdater::defDominatesUse()` function has special handling for PHI operands:
-
-```
-For PHI operands: dominance is checked against the PREDECESSOR block,
-not the PHI's block. This is because PHI semantics place the value
-selection on the incoming edge - the operand is "used" at the end
-of the predecessor, not at the PHI instruction itself.
-```
-
-This means:
-- When reload is in `bb7` and PHI is in `bb9` with operand from `bb7`
-- `defDominatesUse(reload_bb7, PHI_operand_from_bb7)` returns **true**
-- The PHI operand gets rewritten to use the reloaded value
-
-### New Algorithm
-
-1. **DO NOT kill** the spilled register's LiveInterval at spill point
-2. Process all uses (dominated and reachable) normally
-3. Insert reloads and call SSA repair
-4. `defDominatesUse` correctly rewrites PHI operands coming from reloaded paths
-5. Final `shrinkToUses` naturally contracts the spilled register's LiveInterval
-
-### Why This Works
-
-```mermaid
-flowchart TD
-    subgraph "PHI-Aware Rewriting"
-        S["bb0: spill x<br/>(x stays live!)"]
-        B7["bb7: %53 = reload<br/>use %53"]
-        B8["bb8: %54 = reload<br/>use %54"]
-        J["bb9: %z = PHI(%53, bb7, %54, bb8)<br/>use %z"]
-
-        S --> B7
-        S --> B8
-        B7 --> J
-        B8 --> J
-    end
-
-    note["defDominatesUse(reload_bb7, PHI_op_bb7) = true<br/>defDominatesUse(reload_bb8, PHI_op_bb8) = true<br/>→ Both PHI operands get rewritten!"]
-```
-
-The PHI operand `x` from `bb7` is dominated by the reload in `bb7` (because dominance is checked against `bb7`, not `bb9`), so it gets rewritten to `%53`. Same for `bb8` → `%54`.
-
-### Edge Case: "Dead x" on Non-Reload Path
-
-In some CFGs, a PHI may have the spilled register as operand from a path where no reload was inserted (because there were no uses on that path):
-
-```mermaid
-flowchart TD
-    S["bb0: spill x"]
-    B1["bb1: use x → reload %53"]
-    B2["bb2: no use of x"]
-    J["bb3: PHI(%53, bb1, x, bb2)"]
-
-    S --> B1
-    S --> B2
-    B1 --> J
-    B2 --> J
-```
-
-**Handling**: The `fixPathologicalPHIs` function detects PHIs with spilled register operands and replaces them with reload instructions that define directly into the PHI's result register.
-
-See [SSA_Repairing_Disorder](../08-Worklog/issues/SSA_Spiller/SSA_Repairing_Disorder.md) for the original problem analysis.
-
----
-
-# Static Next Use Analysis limitation
-We currently don't consider virtual registers created by reload instructions and PHIs results created by SSA Updater for further live interval splitting/spilling because of the [Static_NUA_limitation](../08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md)
-[MachineLaneSSAUpdater](MachineLaneSSAUpdater.md) repairSSAForNewDef has been changed to fill in the vector of the Machine Operands - inserted PHIs definitions.
+## Removed machinery
+- `defDominatesUse`-based PHI-operand rewriting, `fixPathologicalPHIs` — replaced
+  by reaching-VNI identity on the frozen oracle (dominance is no longer the
+  ownership test).
+- Pruned-IDF, `repairSSAForReload`, reload optimizer / NCD hoisting — removed;
+  see [Reload_optimizer](Reload_optimizer.md) (deprecated) and [Reload_join_phi_coalescing](Reload_join_phi_coalescing.md).
+- Second `RebuildSSA` after the spiller — removed (inline repair).

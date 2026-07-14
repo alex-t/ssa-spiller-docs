@@ -1,7 +1,7 @@
 # Open Problems
 
 ## High Priority
-- [Static_NUA_limitation](../08-Worklog/issues/Next_Use_Analysis/Static_NUA_limitation.md)
+- `Static_NUA_limitation`
 
 ## Medium
 - Cost model for reload hoisting.

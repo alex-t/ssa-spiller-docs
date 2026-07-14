@@ -65,8 +65,6 @@ Source: [`AMDGPUSSARegisterSpiller.cpp` L709-720](https://github.com/alex-t/llvm
 | [`spill-vreg-many-lanes.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-vreg-many-lanes.mir) | Large vreg_1024 stress test |
 | [`spill-dom-groups-a.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-dom-groups-a.mir) | [Dominance grouping](../../04-Design/SSA_SPILLER_DESIGN.md#dominance-grouping-domgroup-class) - basic |
 | [`spill-dom-groups-b.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-dom-groups-b.mir) | [Dominance grouping](../../04-Design/SSA_SPILLER_DESIGN.md#dominance-grouping-domgroup-class) - complex CFG |
-| [`spill-balanced-use-before.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-balanced-use-before.mir) | **XFAIL** - Balanced spilling not implemented |
-
 ---
 
 ## Test 1: spill-linear-dominated.mir
@@ -360,39 +358,7 @@ graph LR
 
 ---
 
-## Test 8: spill-balanced-use-before.mir
-
-### Pattern: Balanced Spilling (XFAIL)
-
-### CFG Diagram
-
-```mermaid
-graph TD
-    BB0["bb.0.entry<br/>%0:vreg_128 = COPY<br/>S_CMP, S_CBRANCH"]
-    BB1["bb.1.path_a<br/>S_NOP %0 (early use)<br/>%1, %2 = IMPLICIT_DEF<br/>HIGH RP: 12 VGPRs"]
-    BB2["bb.2.path_b<br/>%4, %5 = IMPLICIT_DEF<br/>HIGH RP: 12 VGPRs"]
-    BB3["bb.3.join<br/>S_ENDPGM %0"]
-    
-    BB0 -->|SCC=1| BB1
-    BB0 -->|SCC=0| BB2
-    BB1 --> BB3
-    BB2 --> BB3
-    
-    style BB1 fill:#ffe1e1
-    style BB2 fill:#ffe1e1
-```
-
-**Status:** XFAIL - Balanced spilling pending cost model implementation.
-
-**Expected Behavior (when implemented):**
-- Both paths have high RP (12 VGPRs > limit)
-- Cost model detects both paths benefit from spilling
-- Spill inserted on BOTH paths (hoisting to NCD impossible due to early use in bb.1)
-- Single reload at join
-
----
-
-## Test 9: spill-dom-groups-a.mir
+## Test 8: spill-dom-groups-a.mir
 
 ### Pattern: Dominance Grouping (Basic)
 
@@ -524,14 +490,13 @@ graph TD
 
 | Feature | Description |
 |---------|-------------|
-| **Balanced spilling** | Spill on both paths when both have high RP |
 | **Loop-aware spilling** | Optimize spill/reload placement around loops |
 
 ---
 
 **Last Updated:** 2026-06-11
 **Design Version:** [Store-at-Definition](../../04-Design/Decisions.md#store-at-definition); SGPR accounting split from materialization (2026-06-11)
-**Test Count:** 56 PASS, 3 XFAIL (2 loop-filter, 1 balanced-use-before) — SGPR lowering tests planned
+**Test Count:** SGPR lowering + budget tests passing; 2 XFAIL (loop-filter fallback). Balanced-spill test removed (obsolete — superseded by store-at-definition).
 **Source:**  ( branch)
 
 ---
@@ -545,13 +510,15 @@ Tests use `IMPLICIT_DEF + COPY` for all incoming values — no physreg live-ins.
 
 | # | Test (planned filename) | What it tests |
 |---|-------------------------|---------------|
-| 1 | `spill-sgpr-linear-basic.mir` | Single 32-bit SGPR spill, linear CFG: `SI_SPILL_S32_SAVE` pseudo in spiller output → `SI_SPILL_S32_TO_VGPR` after lowering |
-| 2 | `spill-sgpr-wide.mir` | 64/128-bit SGPR → N writelane/readlane calls (one per 32-bit sub-slot) |
-| 3 | `spill-sgpr-lane-packing.mir` | Multiple distinct SGPR spills packed into successive lanes of one lane VGPR |
-| 4 | `spill-sgpr-budget-reduction.mir` | `countSGPRSpillVGPRs()` reduces VGPR budget; an additional VGPR spill appears in Pass 2 only because of reduced budget |
-| 5 | `spill-sgpr-implicit-def-linear.mir` | `IMPLICIT_DEF` for lane VGPR precedes first writelane in single-block function |
-| 6 | `spill-sgpr-implicit-def-ncd.mir` | Two spill sites in different blocks: `IMPLICIT_DEF` placed at NCD (dominance logic in `SILowerSGPRSpills`) |
-| 7 | `spill-sgpr-implicit-def-loop.mir` | Spill inside loop: `IMPLICIT_DEF` hoisted to preheader |
+| 1 | `spill-sgpr-linear-basic.mir` | ✅ Done. Single 32-bit SGPR, linear CFG. Three-stage pipeline checks pass. |
+| 2 | `spill-sgpr-wide.mir` | ✅ Done. 64-bit SGPR, partial subreg fix: only sub0 spilled, one writelane, REG_SEQUENCE on restore. Also fixed `storeRegToStackSlot` SubRegIdx + `getVMPsToSpill` partial decomposition. |
+| 3 | `spill-sgpr-lane-packing.mir` | ✅ Done. Multiple distinct SGPR spills packed into successive lanes of one lane VGPR |
+| 4 | `spill-sgpr-budget-reduction.mir` | ✅ Done. `countSGPRSpillVGPRs()` reduces VGPR budget; one VGPR spill appears in Pass 2 only because of the reduced budget |
+| 5 | `spill-sgpr-implicit-def-linear.mir` | ✅ Done. `IMPLICIT_DEF` for lane VGPR precedes first writelane in single-block function |
+| 6 | `spill-sgpr-implicit-def-ncd.mir` | ✅ Done. Two spill sites in sibling diamond branches packed into one lane VGPR; `IMPLICIT_DEF` placed at NCD (bb.0) via `updateLaneVGPRDomInstr` |
+| 7 | `spill-sgpr-implicit-def-loop.mir` | ✅ Done. Spill inside loop: `IMPLICIT_DEF` hoisted to preheader |
+
+**Status: 7/7 complete.** All SGPR spill/reload lowering tests pass.
 
 **Design rule**: design one at a time — show CFG + liveness sketch → get `APPROVED:` → create file → run.
 
