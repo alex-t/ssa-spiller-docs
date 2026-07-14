@@ -469,6 +469,38 @@ Land the metric first (§9) — it is both the baseline and the guard for every
 later step. Each step is checkable with the §9.5 acceptance triple: "weighted
 copy count went down, spill count did not go up, occupancy did not drop".
 
+### 10.1 Status (2026-07-14)
+
+| Step | State | Result |
+|---|---|---|
+| 0 metric | ✅ done | baseline: 26766 static / 29889 weighted φ-copies |
+| 1 Option B | ✅ done, corpus-accepted | weighted −62% cumulative; CRASH 55→47; zero real occupancy/scratch loss |
+| 1b sub-register hints | ✅ done (part of the greedy pass, **not** the §8 lane coalescer) | both directions: `getSubReg` (result←wide-operand slice) and `getMatchingSuperReg` (wide-operand→narrow-result, loop-carried tuple). Direction B alone fixed −8 crashes |
+| 2 Option A single-φ | ⏳ next | — |
+| 3 cross-φ pinning | 🔮 later | — |
+| 4 sub-register lanes (per-lane OptUnit) | 🔮 later | greedy sub-reg hints (1b) are a *cheaper subset*; per-lane *partial* tuple fixed points still need Option A |
+
+Implementation lives in `ssara-claude` (uncommitted); collected as patches under
+`../../08-Worklog/2026-07-14-phicoalescer/promote/`. Note steps 1/1b are
+**affinity-biased greedy coloring**, not the paper's recoloring coalescer — they
+capture fixed points that are *free to grab* in one forward pass, never recolor.
+
+### 10.2 The feasibility ceiling is near-total (motivates Option A)
+
+The Step-0 metric was extended with a **lane-accurate** feasibility test:
+interference is checked at read-lane granularity (subrange overlap restricted to
+the operand's `getSubRegIndexLaneMask`), not whole-vreg — a whole-vreg overlap
+falsely rejects a sub-register operand whose sibling lanes are live but whose read
+lane is not. Corpus result: of the residual φ-copies after greedy, only
+**24 (0.2%) are genuinely infeasible** (read-lane interferes with the result);
+**99.8% are feasible** — i.e. coalescable in principle by a recoloring pass.
+
+So greedy (steps 1/1b) is *far* from the ceiling: it leaves a large feasible
+remainder it cannot take because it never recolors an already-placed operand.
+That remainder is exactly Option A's target. Caveat: 99.8% is a *necessary-
+condition* upper bound (no read-lane/result interference); it ignores cross-φ
+color contention, so Option A's real yield is below it.
+
 ---
 
 ## 11. Open questions

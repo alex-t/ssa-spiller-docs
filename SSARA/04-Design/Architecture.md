@@ -207,7 +207,8 @@ SSA is maintained throughout.
 
 | Feature | Description | Priority |
 |---------|-------------|----------|
-| PHI coalescer | Recolor PHI operands to reduce copies (paper §4.3; design: [[PHI_Coalescer]]); the durable fix for the cross-call [[SSA_RA_Coloring#Cross-Call Color Constraint\|physreg-exhaustion]] class | High |
+| PHI coalescer — greedy affinity (Option B + sub-reg hints) | 🟡 Done in `ssara-claude`, uncommitted; corpus-accepted (weighted φ-copies −62%, CRASH 55→47). Greedy color choice, not yet recoloring. See [[PHI_Coalescer#10.1 Status (2026-07-14)]] | — |
+| PHI coalescer — real recoloring (paper §4.3, Option A) | Recolor PHI operands to reduce copies (design: [[PHI_Coalescer]]); durable fix for cross-call [[SSA_RA_Coloring#Cross-Call Color Constraint\|physreg-exhaustion]] — 99.8% of residual copies feasible | High |
 | Per-class RP / feasibility gate | [[GCNUpwardRPTracker_PerClassRP]] + [[Spiller_Redesign]] fragmentation-aware spilling & greedy fallback | High |
 | Spiller/RA budget reconcile | Spiller budgets via `getMaxNumVGPRs` (128 on gfx90a incl. AGPR half); RA colors into `getNumAllocatableRegs(VGPR_32)`=64 | High |
 | Loop-filter fallback | `getVMPsToSpill` when the loop filter empties the candidate set | Medium |
