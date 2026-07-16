@@ -85,6 +85,31 @@ SSA destruction is:
 ✅ register permutation synthesis
 
 ---
+
+## Implementation status
+
+SSA destruction **is implemented** and runs inside the SSA register allocator —
+`AMDGPUSSARegisterAllocator::destroySSAAndRewrite()`
+(`llvm/lib/Target/AMDGPU/AMDGPUSSARegisterAllocator.cpp`). After coloring, it
+performs, in order:
+
+1. `lowerPHIs()` — lowers φ-blocks as parallel register assignments.
+2. `resolvePermutation()` — realizes each block boundary as a permutation, not
+   sequential copies, breaking cycles with the three-tier strategy below.
+3. `eliminateRegSequences()` — lowers `REG_SEQUENCE` pseudos (also routed
+   through `resolvePermutation`, since a `REG_SEQUENCE` is itself a parallel
+   assignment).
+4. `addPhysRegLiveIns()` — records physreg live-ins.
+5. `MRI->leaveSSA()` — drops the SSA property.
+
+The whole step is **skipped** when the function still contains SI control-flow
+pseudos (`hasCFPseudos()` returns true).
+
+Cycle breaking in `resolvePermutation` matches the paper's permutation view with
+three tiers: (1) a scratch register when occupancy is preserved, (2) per-subreg
+`V_SWAP_B32` on GFX9+, and (3) an XOR triplet as the last resort.
+
+---
 ## References
 
 Paper citation:

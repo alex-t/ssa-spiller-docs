@@ -6,14 +6,24 @@ Documentation for SSA-based register allocation: design, implementation, and res
 
 ## Status
 
+The whole pipeline is gated behind the hidden `-amdgpu-ssa-regalloc` option
+(default **OFF**), and is wired only into the legacy pass manager.
+
 | Component | Status |
 |-----------|--------|
-| **SSA Spiller** | ✅ Implemented |
+| **SSA Spiller** (with inline reaching-VNI reconstruction) | ✅ Implemented |
 | **NextUseAnalysis** | ✅ Implemented |
 | **MachineLaneSSAUpdater** | ✅ Implemented |
-| SSA Rebuilder | ⚠️ Temporary |
-| SSA Register Allocator | ⚠️ Coloring implemented |
-| SSA Destruction | 📋 Not yet implemented |
+| **SSA Register Allocator** — coloring (width-descending PEO) | ✅ Implemented |
+| **SSA Destruction + operand rewrite** | ✅ Implemented |
+| **SimplifyUndefPHI** (undef-flag + single-real-operand fold) | ✅ Implemented |
+| SSA Rebuilder | ⚠️ Temporary bridge (to be removed) |
+| Full PHI coalescer | 📋 Not implemented (affinity hints + metrics only) |
+| New pass manager support | 📋 Not wired |
+
+SSA destruction is **skipped** for functions that still contain SI
+control-flow pseudos (`SI_IF`/`SI_ELSE`/`SI_IF_BREAK`/`SI_LOOP`/`SI_END_CF`) —
+see [Open Problems](10-Backlog/Open_problems.md).
 
 ---
 
@@ -28,10 +38,10 @@ Documentation for SSA-based register allocation: design, implementation, and res
 
 - [SSA Spiller](02-Components/SSA_Spiller.md) — store-at-definition spilling
 - [Next Use Analysis](02-Components/Next_Use_Analysis.md) — Belady-style distance computation
-- [MachineLaneSSAUpdater](04-Design/MachineLaneSSAUpdater.md) — lane-aware SSA repair
-- [SSA Rebuilder](02-Components/SSA_Rebuilder.md) ⚠️ — temporary SSA reconstruction
-- [SSA Register Allocator](02-Components/SSA_Register_Allocator_Impl.md) 📋
-- [SSA Destruction](02-Components/SSA_Destruction.md) 📋
+- [MachineLaneSSAUpdater](04-Design/MachineLaneSSAUpdater.md) — lane-aware SSA repair (reaching-VNI oracle)
+- [SSA Rebuilder](02-Components/SSA_Rebuilder.md) ⚠️ — temporary SSA reconstruction bridge
+- [SSA Register Allocator](02-Components/SSA_Register_Allocator_Impl.md) ✅ — coloring + SSA destruction + operand rewrite
+- [SSA Destruction](02-Components/SSA_Destruction.md) ✅ — PHI lowering + operand rewrite (part of the allocator)
 
 ---
 

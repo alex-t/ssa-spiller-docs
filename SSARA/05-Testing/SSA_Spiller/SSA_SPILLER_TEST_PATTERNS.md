@@ -1,6 +1,16 @@
-# SSA Spiller Test Documentation (New Design)
+# SSA Spiller Test Documentation
 
-## Current Spiller Design (2025-11-19)
+## Current Spiller Design
+
+### Test invocation
+
+The spiller runs as `-run-pass=amdgpu-ssa-register-spiller` (chained with
+`amdgpu-ssa-register-allocator` and `si-lower-sgpr-spills` where a test checks
+past-coloring output). Spilling is forced with `-mcpu=gfx1200` plus an
+`"amdgpu-num-vgpr"="N"` function attribute (newer full-pipeline reconstruction
+tests use `N=3`). Reload-placement optimization can be disabled with
+`-amdgpu-ssa-spill-no-reload-opt`. The full SSA pipeline (end-to-end `.ll`
+tests) is enabled with the hidden `-amdgpu-ssa-regalloc` option.
 
 ### Core Strategy: Store at Definition
 
@@ -10,19 +20,31 @@
 ```
 1. spillAtDefinition(VMP)         → Store right after def (EXEC full)
 2. Compute KillIdx                → Virtual spill point (where RP drops)
-3. emitReloadsAndRepairSSA()      → Place reloads, repair SSA
-4. shrinkToUses()                 → Trim LiveInterval after all repairs
+3. emitReloadsAndRepairSSA()      → Dominance-ordered on-demand reloads,
+                                    inline SSA reconstruction
 ```
+
+Reloads are placed on demand against a **frozen deep copy** of the spilled
+vreg's LiveInterval, pruned at the kill point (the live `LiveIntervals` is left
+intact for pressure tracking). A per-use, per-edge availability query emits a
+reload only where a spilled lane is unavailable on an incoming edge; a value
+live-in on all predecessors is left as a genuine merge (a PHI) for
+reconstruction. Each reload redefines the original vreg and SSA is repaired
+**inline** via `MachineLaneSSAUpdater::repairSSAForNewDef` (reaching-VNI
+oracle), so the spiller returns SSA MIR. There is no separate reload optimizer.
 
 Source: [`spillAtDefinition`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L966-L1047), [`emitReloadsAndRepairSSA`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp#L744-L960)
 
 ### Virtual Spill Marker Pseudo-Instruction
 
-**Compiler Option:** `--amdgpu-ssa-spill-markers=1`
+**Compiler Option:** `-amdgpu-ssa-spill-markers` (default **OFF**; `=1` to enable)
 
 **Instruction:** [`SI_VIRTUAL_SPILL_MARKER`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/lib/Target/AMDGPU/SIInstructions.td) `%<vreg>, <lane_mask>`
 
-**Purpose:** A test-only pseudo-instruction that marks the **virtual spill point** - the location where register pressure is relieved (register logically becomes dead). This may differ from the **physical store location** ([store-at-definition](../../04-Design/Decisions.md#store-at-definition)).
+**Purpose:** A test-only pseudo-instruction (emitted only when the flag is
+enabled) that marks the **virtual spill point** - the location where register
+pressure is relieved (register logically becomes dead). This may differ from
+the **physical store location** ([store-at-definition](../../04-Design/Decisions.md#store-at-definition)). It is a temporary testing aid — the plan is to replace it with `SIMachineFunctionInfo` metadata.
 
 **Arguments:**
 - `%<vreg>`: Virtual register being spilled (e.g., `%0`, `%1`)
@@ -48,7 +70,7 @@ Source: [`AMDGPUSSARegisterSpiller.cpp` L709-720](https://github.com/alex-t/llvm
 | Use Type | Current Behavior |
 |----------|-----------------|
 | **Dominated** | Emit reload at [group head](../../04-Design/SSA_SPILLER_DESIGN.md#dominance-grouping-domgroup-class), rewrite uses |
-| **Reachable** | Emit reload at use, [`MachineLaneSSAUpdater`](../../02-Components/MachineLaneSSAUpdater.md) inserts PHIs |
+| **Reachable** | Emit on-demand reload where a lane is unavailable on an incoming edge; SSA repaired inline by [`MachineLaneSSAUpdater::repairSSAForNewDef`](../../02-Components/MachineLaneSSAUpdater.md) (reaching-VNI oracle, PHIs placed at PHI-def VNInfos) |
 
 ---
 
@@ -469,10 +491,12 @@ graph TD
 **Handling:**
 1. [Store at definition](../../04-Design/Decisions.md#store-at-definition)
 2. Virtual spill point on one path
-3. Reload at use (all paths currently)
-4. [`MachineLaneSSAUpdater`](../../02-Components/MachineLaneSSAUpdater.md) inserts value PHIs
+3. On-demand reload where a lane is unavailable on an incoming edge (per-edge availability against the frozen pruned interval)
+4. SSA repaired inline by [`MachineLaneSSAUpdater::repairSSAForNewDef`](../../02-Components/MachineLaneSSAUpdater.md), which places value PHIs at the recomputed interval's PHI-def VNInfos
 
 **Tests:** [`spill-multi-predecessor-join.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-multi-predecessor-join.mir), [`spill-use-before-spill.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-use-before-spill.mir), [`spill-vreg-subregister.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-vreg-subregister.mir)
+
+PHI-reconstruction stress tests (full pipeline, `gfx1200` + `"amdgpu-num-vgpr"="3"`): [`spill-triangle-phi.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-triangle-phi.mir), [`spill-diamond-phi-merge.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-diamond-phi-merge.mir), [`spill-nested-phi-phi.mir`](https://github.com/alex-t/llvm-project/blob/45385c6f5f008cde206d5828a00a17d6bb7f7783/llvm/test/CodeGen/AMDGPU/SSASpiller/spill-nested-phi-phi.mir).
 
 ### Case 3: Subregister Spilling
 
@@ -494,10 +518,8 @@ graph TD
 
 ---
 
-**Last Updated:** 2026-06-11
-**Design Version:** [Store-at-Definition](../../04-Design/Decisions.md#store-at-definition); SGPR accounting split from materialization (2026-06-11)
-**Test Count:** SGPR lowering + budget tests passing; 2 XFAIL (loop-filter fallback). Balanced-spill test removed (obsolete — superseded by store-at-definition).
-**Source:**  ( branch)
+**Design Version:** [Store-at-Definition](../../04-Design/Decisions.md#store-at-definition) with dominance-ordered on-demand reloads against a frozen pruned interval and inline reaching-VNI SSA reconstruction; SGPR accounting split from materialization.
+**Test Count:** The `SSASpiller/` directory holds ~40 MIR tests (this document walks through a representative subset). One legit XFAIL documents an unimplemented loop-aware spill-candidate fallback (`validateFinalRegisterPressure`). `SI_VIRTUAL_SPILL_MARKER` is emitted only under `-amdgpu-ssa-spill-markers`.
 
 ---
 

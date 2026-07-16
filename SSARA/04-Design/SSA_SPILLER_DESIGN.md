@@ -27,6 +27,11 @@ AMDGPU, as implemented in LLVM Machine IR.
 
 ## Overview
 
+In the wired pipeline the spiller runs immediately **after**
+[`AMDGPUSimplifyUndefPHI`](PHI_Coalescer.md) (which flags fully-undef PHI
+operands and folds single-real-operand undef PHIs) and **before** the SSA
+register allocator. See [Architecture](Architecture.md#overview).
+
 The SSA spiller is a `MachineFunction` pass that:
 
 - Scans instructions and tracks register pressure (RP).
@@ -106,6 +111,50 @@ targets, or occupancy-limited functions — the `min` keeps the smaller
 > crashes). Worklog:
 > `SPILLER_BUDGET_FIX`,
 > `NONCOALESCABLE_CLUSTER_ANALYSIS`.
+
+### Precolored-PR tuple-feasibility gate — DOWNSCOPED / DEFERRED (2026-07-15)
+
+**Superseded by the ACL pass + AGPR coloring; do not build the full version.**
+Recorded here for rationale.
+
+The idea: the RP model counts **a scalar sum of 32-bit slots**, so `SUM(RP) < limit`
+can hold while no **aligned wide tuple** is placeable, because fixed precolored
+physregs fragment the file (the `tuple-allocation-failure` shape). A sound gate
+would need, at each **tuple def (width > 32)** — *not* at an RP peak, since no RP
+threshold signals tuple infeasibility — a **positional segment-pack**: build the
+precolored-free segments (fixed PR positions), pack the live vregs widest-first
+(the spiller assigns vregs no positions, only widths), then test an aligned window
+for the new def. Per-width counters cannot be maintained incrementally: a
+same-width placement has position-dependent cross-width effect
+(`---PR--PR-----PR---` admits only even-aligned 64-windows), and the count is only
+sound when derived from the segments.
+
+**Why it is not worth building:**
+
+1. **Precoloring is dominated by ABI/call, not inline asm** (measured on the crash
+   MIRs — wide precolored tuple *instructions*: COPY ABI arg/ret ~386, CALL ~40,
+   INLINE_ASM ~30; plus ~11k narrow ABI arg copies). Inline asm is ~7%.
+2. **ABI/call fragmentation is handled by the ACL pass** (proposal in
+   [SSA_RA_Coloring](SSA_RA_Coloring.md#proposed-fix-dedicated-around-call-liver-acl-pass-not-yet-implemented)).
+   Once around-call-livers are partitioned into callee-saved, the ordinary pass no
+   longer sees ABI/call precolored fragmentation.
+3. **The residual middle-of-file fragmenter is the AV cluster** (`a-v-*`,
+   `ds_*_a_v`), whose tuples are the **unspillable inline-asm requirements
+   themselves** → needs AGPR coloring
+   ([SSA_RA_Coloring](SSA_RA_Coloring.md#48-agpr-coloring-gap-av-class-values-are-pinned-to-vgpr)),
+   not spill feasibility (you cannot spill a slot the inline asm requires).
+
+After (2) and (3), this gate's *exclusive* target is nearly empty (pure inline-asm
+fragmentation of *spillable* vregs — a handful of tests at most). **Keep at most an
+optimistic per-width tuple counter** (nested `Tuples[N]`, subtract-on-def /
+add-on-kill) as a cheap sum-refinement fast-reject; the positional segment-pack is
+not justified. Revisit only if measurement (after ACL + AGPR land) shows a real
+residual.
+
+> Priority order (2026-07-15): **(1) ACL pass**, (2) AGPR coloring §4.8,
+> (3) this gate demoted to the optimistic counter or dropped. Firing estimate and
+> source breakdown:
+> `REMAINING_CRASHES_CLASSIFICATION`.
 
 ## Terminology
 
@@ -325,6 +374,12 @@ exist**; do not look for them in the code:
 
 - Pruned-IDF PHI insertion (`getPrunedIDF`, `computePrunedIDF`, `IDFCache`).
 - `repairSSAForReload`, `createPHIInBlock` (dominance-based).
-- Reload optimizer / NCD clique hoisting (`optimizeReloadPlacing`).
+- Reload optimizer / NCD clique hoisting (`optimizeReloadPlacing`). Only a **dead
+  cl::opt** survives: `-amdgpu-ssa-spill-no-reload-opt` (`DisableReloadOptimizer`)
+  is declared but has no consumer (see [Reload_optimizer](Reload_optimizer.md)).
 - `fixPathologicalPHIs`, `processPIdfBlock`, kill-dominance classification.
 - Interval-killing before SSA repair (see [Decisions](Decisions.md)).
+
+The test-only `SI_VIRTUAL_SPILL_MARKER` pseudo (emitted under
+`-amdgpu-ssa-spill-markers=1`, default off) is a diagnostic marker with **no
+logic consumer** — it only annotates the virtual spill point for tests.

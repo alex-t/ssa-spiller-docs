@@ -1,5 +1,19 @@
 # NUA Benchmarking Strategy
 
+> **Current implementation status.** In the `ssara` worktree, the in-tree ML
+> NUA is registered as `amdgpu-next-use` (`DEBUG_TYPE "amdgpu-next-use"`,
+> `AMDGPUNextUseAnalysisWrapper`). It is **lazily analyzed** — `init()` +
+> `analyze()` are deferred to the first query via `ensureAnalyzed()` — and is
+> **used only by the SSA spiller**. The timer flag
+> `-amdgpu-next-use-analysis-timers` exists today (timers `"Time spent in
+> analyze()"` and `"Time spent in getNextUseDistance()"`, group description
+> `"AMDGPU Next Use Analysis"`); distance dumping is
+> `-amdgpu-next-use-dump-distance`. The `-amdgpu-next-use-per-function-timers`
+> flag and the `exerciseQueries()` method described below are part of the
+> **comparison harness / GFX NUA instrumentation** (Section 3 patch), not the
+> current in-tree ML NUA. This document describes the methodology for comparing
+> the two implementations.
+
 ## 1. Motivation: Why Timers Are Needed
 
 Comparing the two Next Use Analysis implementations (ML NUA and GFX NUA) by

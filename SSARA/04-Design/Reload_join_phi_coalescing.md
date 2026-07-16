@@ -174,14 +174,14 @@ spilled) with the join value via a PHI.
   original-survival or a merge PHI.
 - Preserve the original on non-spilled paths (do not rewrite those uses to reloads) -- this
   is automatic if no reload is placed there.
-- `optimizeReloadPlacing`: bypassed in the spill path (dominance-order reuse replaces its
-  intra-chain sharing; NCD-hoisting dropped as RP-costly). Kept as an optional future
-  optimization.
+- `optimizeReloadPlacing`: **removed** from the source (dominance-order reuse replaces its
+  intra-chain sharing; NCD-hoisting dropped as RP-costly). May return later as an optional
+  low-RP-only optimization.
 - `MachineLaneSSAUpdater::insertLaneAwarePHI` / `rewriteUseReaching`: unchanged; only
   reload-on-demand is folded into the dominance-ordered walk.
 
 ## Related
 
-- [Reload_optimizer](Reload_optimizer.md) -- the previous NCD-hoisting optimizer (now bypassed).
+- [Reload_optimizer](Reload_optimizer.md) -- the previous NCD-hoisting optimizer (now removed from source).
 - [SSA_SPILLER_DESIGN](SSA_SPILLER_DESIGN.md) -- overall spiller architecture.
 - [MachineLaneSSAUpdater](MachineLaneSSAUpdater.md) -- the reaching-VNI reconstruction that inserts the PHIs.

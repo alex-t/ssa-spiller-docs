@@ -1,6 +1,21 @@
 # SSA Register Allocator — Test Patterns
 
-Test MIR files live in `llvm/test/CodeGen/AMDGPU/SSARA/`.
+Tests live in `llvm/test/CodeGen/AMDGPU/SSARA/`.
+
+The allocator runs as `-run-pass=amdgpu-ssa-register-allocator` (MIR tests);
+end-to-end pipeline tests use the hidden `-amdgpu-ssa-regalloc` option (e.g.
+`pipeline-*.ll`). The allocator entry point runs
+`classifyVRegs` → `color` (width-descending PEO, MDT pre-order, phi-affinity
+hints) → `destroySSAAndRewrite` (`lowerPHIs` → `rewriteOperands` →
+`eliminateRegSequences` → `addPhysRegLiveIns` → `leaveSSA`).
+
+Beyond the coloring and destruction tests below, the directory also holds
+end-to-end `pipeline-*.ll` tests and `ra-*` / `rebuildssa-*` regression tests
+(revert-proven crash/miscompile guards).
+
+> **Note:** SSA destruction is **skipped** when a function still contains SI
+> control-flow pseudos (`SI_IF`/`SI_ELSE`/`SI_IF_BREAK`/`SI_LOOP`/`SI_END_CF`),
+> detected by `hasCFPseudos` — an open gap.
 
 ---
 

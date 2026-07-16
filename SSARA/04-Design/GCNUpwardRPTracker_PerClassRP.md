@@ -1,5 +1,13 @@
 # GCNUpwardRPTracker Improvement — Per-Register-Class Pressure
 
+> **Status: PROPOSED — NOT IMPLEMENTED.** No `getClassPressure` /
+> `getClassCapacity` / `PreColoredUnits` members exist on `GCNUpwardRPTracker`.
+> Today the spiller drives spilling from `GCNUpwardRPTracker` (scalar VGPR/SGPR
+> unit pressure) plus its own ad-hoc `LivePhysRP` counter, with the budget
+> capped by allocatable-file size minus ~10%
+> (`AMDGPUSSARegisterSpiller.cpp`). The register-class-aware / pre-color-aware
+> tracker described below is a proposed improvement, not shipped code.
+
 ## 1. Motivation
 
 The SSA spiller must guarantee that, after spilling, the coloring pass can
