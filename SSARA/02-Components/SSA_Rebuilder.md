@@ -38,39 +38,50 @@ Restores SSA form after PHI Elimination pass destroys it. Required during the tr
 - Rewrite uses to correct reaching definitions
 - Lane-aware: handles subregisters correctly
 
-## Current implementation (inline, `ssara` worktree)
+## Current implementation (`AMDGPURebuildSSALegacy`, `ssara` worktree)
 
-Ported from PR #156049. Reconstructs SSA without `MachineLaneSSAUpdater`, using
-LiveIntervals value numbers directly:
+Reconstruction is delegated entirely to [[MachineLaneSSAUpdater]]; the pass no
+longer contains its own reaching-definition logic. `runOnMachineFunction`:
 
-1. For each vreg with >1 value number, build a worklist of its `VNInfo`s,
-   sorted by dominance pre-order of the defining block.
-2. `buildRealPHI` — materialize a real PHI for each PHI-def value number.
-3. `splitNonPhiValue` — clone each non-PHI redefinition into a fresh single-def vreg.
-4. `rewriteUses` — rewrite each use to the value number that actually reaches it.
+1. Early-exits when `MRI->isSSA()` is already true (nothing to rebuild).
+2. Computes a dominator-tree pre-order numbering of all blocks.
+3. For each vreg whose `LiveInterval` has more than one value number:
+   - Find the **establishing** (`Root`) non-PHI value — the earliest in
+     dom-preorder (slot-ordered within a block for read-modify-write chains).
+   - Build a worklist of the remaining non-PHI re-def `VNInfo`s in dom-preorder,
+     with `Root` placed **last**.
+   - Call `Updater.repairSSAForNewDef(*DefMI, VReg, PHIDefs)` for each entry,
+     renaming the re-def to a fresh single-def vreg and inserting lane-aware
+     PHIs. `Root` is only re-processed when it is a partial (subregister) def
+     (a full-register `Root` is already the unique SSA def for its lanes).
+4. `flattenRegSequences` — collapse the nested `REG_SEQUENCE` towers produced by
+   lane-by-lane reconstruction into flat `REG_SEQUENCE`s, so wide values rebuilt
+   from many narrow defs do not carry growing-width live intermediates (which
+   would inflate register pressure) into allocation.
+5. Set the `IsSSA` property; reset `NoPHIs` (PHIs were inserted) and
+   `TiedOpsRewritten` (re-SSA-ifying turns rewritten two-address tied operands
+   back into distinct SSA values, so the function is no longer in two-address
+   form).
 
 ### Reaching-definition correctness (critical)
 
-`rewriteUses` must attribute each use to the value number **live immediately before
-that use**, not merely to a value whose def precedes the use in block order or
-dominates the use's block. A vreg redefined within a block (e.g. a loop induction
-variable: `PHI -> S_ADD redef -> S_CMP use`) has multiple value numbers live at
-different points in the same block; a position-only test (`DefIdx < UseIdx`, or
-block dominance) wrongly attributes a post-redefinition use to the earlier value.
+Attributing each use to the value **live immediately before that use** — not
+merely to a value whose def precedes the use in block order or dominates the
+use's block — is essential. A vreg redefined within a block (e.g. a loop
+induction variable: `PHI -> S_ADD redef -> S_CMP use`) has multiple value
+numbers live at different points in the same block; a position-only test
+(`DefIdx < UseIdx`, or block dominance) wrongly attributes a post-redefinition
+use to the earlier value.
 
-The correct, exact test queries the live interval:
+This is now handled inside `MachineLaneSSAUpdater`, which resolves each use by
+the reaching `VNInfo` read from a frozen copy of the original vreg's live
+interval (PHI operands read at the end of the predecessor edge). See
+[[MachineLaneSSAUpdater]].
 
-```cpp
-SlotIndex UseIdx = LIS->getInstructionIndex(*UseMI).getRegSlot();
-return LI.getVNInfoBefore(UseIdx) == VNI;   // value reaching this use
-```
-
-PHI operands are the exception — they read at the end of the predecessor edge
-(`getVNInfoBefore(getMBBEndIdx(Pred))`).
-
-> Bug history: the original heuristic (`DefIdx < UseIdx` same-block / `dominates()`
-> cross-block) mis-attributed post-redefinition uses, producing spurious back-edge
-> copies in scalar loops. Fixed 2026-06-15 (see `08-Worklog/NOTES.md`).
+> Bug history: an earlier inline heuristic (`DefIdx < UseIdx` same-block /
+> `dominates()` cross-block) mis-attributed post-redefinition uses, producing
+> spurious back-edge copies in scalar loops. Superseded by the reaching-VNI
+> repair in `MachineLaneSSAUpdater` (see `08-Worklog/NOTES.md`).
 
 ## Lifetime
 
@@ -80,10 +91,11 @@ This pass disappears when:
 
 ## Dependencies
 
-- LiveIntervals, MachineDominatorTree, MachineLoopInfo (current inline implementation)
-- [[MachineLaneSSAUpdater]] — **planned**: the intended refactor delegates SSA repair
-  to the updater (def-first renaming), removing the inline reaching-def logic.
-  Not yet implemented — see `08-Worklog/FUTURE_IMPROVEMENTS.md`.
+- LiveIntervals, MachineDominatorTree
+- [[MachineLaneSSAUpdater]] — **done**: SSA repair (def renaming + lane-aware PHI
+  insertion + reaching-VNI use rewriting) is delegated entirely to the updater;
+  the pass holds no inline reaching-def logic. (`MachineLoopInfo` is no longer a
+  dependency.)
 
 ## Related
 

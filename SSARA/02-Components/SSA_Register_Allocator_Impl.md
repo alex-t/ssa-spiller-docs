@@ -4,7 +4,7 @@
 
 ## Status
 
-✅ **Implemented** — coloring, SSA destruction, operand rewrite, physreg tracking. Pipeline end-to-end verified (2026-06-11). Wiring into `addRegAssignAndRewriteOptimized()` pending.
+✅ **Implemented and wired** — coloring, SSA destruction, operand rewrite, physreg tracking. Enabled behind the hidden flag `-amdgpu-ssa-regalloc` (default OFF, legacy PM only): `GCNPassConfig::addRegAssignAndRewriteOptimized()` runs RebuildSSA → SimplifyUndefPHI → SSA Spiller → **SSA Register Allocator**.
 
 ---
 
@@ -40,38 +40,51 @@ This implies the interference graph is **chordal** (or close enough), enabling e
 
 ## High-Level Workflow
 
+`runOnMachineFunction` = `classifyVRegs()` → `color()` → `destroySSAAndRewrite()`.
+
 ### Skeleton
 
 1. **Build analyses**:
-   - Dominator tree (`MachineDomTree`)
-   - Per-instruction next-use info ([[Next_Use_Analysis]])
-   - Register class constraints (`SIRegisterInfo`)
+   - Dominator tree (`MachineDominatorTree`)
+   - LiveIntervals / SlotIndexes
+   - MachineLoopInfo (for phi-affinity hint weighting)
+   - Register class constraints (`SIRegisterInfo`, via `RegClassInfo`)
 
-2. **Traverse dominator tree**:
-   - Maintain active set of currently-live SSA values (lane-aware)
-   - Allocate physical register for each new def when it becomes live
-   - Retire/free values when proven dead along traversal
+2. **`classifyVRegs()`**: collect the set of register widths present, coloring
+   order width-descending.
 
-3. **When no register available**:
-   - Choose eviction/spill candidate using next-use (Belady-like) heuristics
-   - Materialize spill/reload using SSA-aware machinery
+3. **`color()`** — width-descending PEO:
+   - For each width, walk blocks in dominator-tree pre-order.
+   - Per block, `seedOccupiedAtBBEntry` marks physregs of colored live-ins;
+     kills are freed before defs are colored (a def can reuse a dying source's
+     physreg, except across an early-clobber def).
+   - `pickFreePhysReg` scans `RegClassInfo::getOrder(RC)` for a register free at
+     the def, avoiding wider overlapping assignments and any register clobbered
+     by a call/instruction the value is live across (`CallSites`).
+   - Phi-affinity hints (`collectPhiHints`, weighted by $2^{\text{loopdepth}}$)
+     bias the color **choice** only; they never change legality.
 
-4. **Continue** until all defs are assigned.
+4. **`destroySSAAndRewrite()`**: SSA destruction + operand rewrite (see below).
+
+> The allocator does **not** spill: it assumes pressure is already within limits
+> (the [[SSA_Spiller]] runs as a separate pass beforehand). If coloring cannot
+> find a free physreg it asserts `Failed to find free physreg` rather than
+> spilling on demand.
 
 ## Spilling Model
 
-Reuses the [[SSA_Spiller]] model:
-- Store at definition (correctness under EXEC)
-- Virtual spill point (where RP relief is intended)
-- Reload placement + SSA repair via [[MachineLaneSSAUpdater]]
-
-**Key difference**: Spilling is no longer a separate pre-pass; it becomes an on-demand action triggered by register unavailability during allocation.
+Spilling is handled by a **separate pre-pass**, the [[SSA_Spiller]], which runs
+before this allocator and reduces register pressure to within the allocatable
+file size. The allocator itself performs **no** spilling — by the time it runs,
+coloring is expected to always find a free register. The spiller's model
+(store-at-definition, on-demand reload placement, SSA repair via
+[[MachineLaneSSAUpdater]]) is documented under [[SSA_Spiller]].
 
 ## AMDGPU-Specific Concerns
 
 | Concern | Handling |
 |---------|----------|
-| VGPR vs SGPR | Separate allocation passes |
+| VGPR vs SGPR vs AGPR | Processed together per width pass (their reg units don't overlap); the chosen physreg's file drives the high-water mark |
 | Lane masks / subregisters | Allocate at (VReg, LaneMask) granularity |
 | Register tuples | N contiguous registers or fixed tuple shapes |
 | Implicit uses/defs | EXEC, VCC, SCC, M0 affect pressure |
@@ -93,15 +106,38 @@ Reuses the [[SSA_Spiller]] model:
 - *Register Allocation for Programs in SSA Form* (`06-Research/Papers/register-allocation-for-programs-in-ssa-form.pdf`)
 - `06-Research/Papers/ssara.pdf`
 
-## Implemented Details (2026-06-11)
+## Implemented Details
 
 - **`classifyVRegs()`**: populates `ColoringOrder` (width-descending `std::set`).
-- **`colorByWidth(Width)`**: MDT pre-order; `seedOccupiedAtBBEntry` seeds physreg live-ins; kills-before-defs ordering; `pickFreePhysReg` via `RegClassInfo::getOrder(RC)`. Updates `MaxVGPRIdx` / `MaxSGPRIdx` high-water marks.
-- **`destroySSAAndRewrite()`**: `lowerPHIs` → `resolvePermutation` (three-tier cycle-breaking: scratch / V_SWAP_B32 / XOR) → `rewriteOperands` → `leaveSSA` → `invalidateLiveness`.
-- **Tests**: 25 passing (12 coloring + 9 destruction + 2 physreg + 2 wide-swap). No open failures in SSARA/ suite.
+- **`color()`**: function-wide width-descending, MDT pre-order per width;
+  `seedOccupiedAtBBEntry` seeds physreg live-ins; kills-before-defs ordering
+  (deferred past early-clobber defs); `pickFreePhysReg` via
+  `RegClassInfo::getOrder(RC)` with call/clobber avoidance (`CallSites`) and
+  phi-affinity `Hints` from `collectPhiHints`. Updates `MaxVGPRIdx` /
+  `MaxSGPRIdx` / `MaxAGPRIdx` high-water marks. Tied defs inherit the tied use's
+  color.
+- **`destroySSAAndRewrite()`**: `lowerPHIs` → `rewriteOperands` →
+  `eliminateRegSequences` → `addPhysRegLiveIns` → `finalizeProperties`.
+  - `resolvePermutation` (parallel-copy cycle breaking: scratch register /
+    `emitSwap` via `V_SWAP_B32` / `V_SWAP_B16` / SGPR `S_XOR` triplet / AGPR
+    scratch fallback) is called from both `lowerPHIs` and `eliminateRegSequences`.
+  - `finalizeProperties` runs `leaveSSA` + `clearVirtRegs` and sets `NoPHIs`,
+    `NoVRegs`, `TiedOpsRewritten` (mirroring `VirtRegRewriter`);
+    `TracksLiveness` is deliberately preserved.
+- **PHI-copy metrics**: `lowerPHIs` counts copy-vs-fixed-point PHI operands
+  (`-debug-only=amdgpu-phi-metric`) — pure instrumentation, no MIR change.
+
+## Known Gap
+
+- **CF-pseudo functions**: `destroySSAAndRewrite` is **skipped entirely** when the
+  function still contains SI control-flow pseudos (`SI_IF` / `SI_ELSE` /
+  `SI_IF_BREAK` / `SI_LOOP` / `SI_END_CF`), via `hasCFPseudos`. Coloring still
+  runs, but PHIs and virtual registers remain in such functions.
 
 ## Pending
 
-- Pipeline wiring: `-amdgpu-ssa-regalloc` flag in `addRegAssignAndRewriteOptimized()`, ordering: SSA Spiller → SSA RA → `SILowerSGPRSpills`.
-- PHI coalescer (paper §4.3).
-- Reg-unit vs pressure-unit mismatch fix (VGPR_32 has 2 reg units, 1 pressure unit).
+- Full PHI coalescer (paper §4.3). Only partial pieces exist today:
+  `AMDGPUSimplifyUndefPHI` (a wired standalone pass), `collectPhiHints`
+  (affinity hints), and the PHI-copy metrics — a general coalescer is **not**
+  implemented.
+- Reg-unit vs pressure-unit mismatch (VGPR_32 has 2 reg units, 1 pressure unit).

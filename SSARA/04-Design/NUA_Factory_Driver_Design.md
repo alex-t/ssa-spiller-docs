@@ -1,5 +1,13 @@
 # NUA Factory + Driver Design (GFX/ML)
 
+> **Status: DRAFT / NOT IMPLEMENTED.** This is an aspirational design. No
+> `NUAClassFactory`, `IAnalysisDriver`, `INUANextUseAnalysis`, or GFX/ML driver
+> types exist in the tree. Today the SSA pipeline uses the concrete
+> `AMDGPUNextUseAnalysis` / `AMDGPUNextUseAnalysisWrapper` directly (the spiller
+> acquires it via `getAnalysis<AMDGPUNextUseAnalysisWrapper>()`), with no
+> factory/driver abstraction layer. The interfaces and class/sequence diagrams
+> below describe a proposed unification, not shipped code.
+
 ## Context and goal
 Provide a single user-visible entry point for Next Use Analysis (NUA) and SSA
 Spiller that hides the GFX vs ML implementations.

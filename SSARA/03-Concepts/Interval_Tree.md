@@ -467,6 +467,13 @@ intervals that is `O(Q·N)` vs `O(Q·log N)` (plus output) — the whole reason 
   correctly, just not in guaranteed `O(log N)`. Start correct (even a simple balanced BST or a
   sorted structure), then confirm the height bound matters for large kernels before optimizing.
 
+> **Implementation status (not yet wired in).** As of the current tree,
+> `AMDGPUSSARegisterAllocator::pickFreePhysReg` still uses the brute-force
+> `O(|ColorMap|)` linear scan over already-colored wider ranges (see the
+> comments around the `ColorMap` scan in `AMDGPUSSARegisterAllocator.cpp`). The
+> interval tree described here is a **planned optimization** to replace that
+> scan; it has not been implemented.
+
 ---
 
 ### References

@@ -1,11 +1,17 @@
 # Reload Optimizer Design
 
-> **DEPRECATED — describes removed code (historical).**
+> ## ⚠️ HISTORICAL / REMOVED — this design is no longer in the code.
+>
 > `optimizeReloadPlacing` and its clique/NCD-hoisting have been **removed** from
 > [`AMDGPUSSARegisterSpiller`](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPUSSARegisterSpiller.cpp);
-> do not expect this function in the source. It is **superseded** by
-> dominance-ordered reload placement — see [[Reload_join_phi_coalescing]] and
+> do not expect this function in the source. It is **superseded** by the current
+> **on-demand, dominance-ordered** reload placement — see
+> [[Reload_join_phi_coalescing]] and
 > [[SSA_SPILLER_DESIGN#Reload placement — cut-LI, dominance-ordered, redef-only]].
+>
+> Only a **dead cl::opt** remains: `-amdgpu-ssa-spill-no-reload-opt`
+> (`DisableReloadOptimizer`) is still declared but has no consumer, since the
+> optimizer it once toggled is gone.
 >
 > **Why removed.** Dominance-order processing makes a dominating reload visible to
 > dominated uses, so intra-chain sharing is free without an optimizer. The only

@@ -25,14 +25,16 @@ and spill-code lowering live in the linked component documents (see the table in
 flowchart TD
     IN["Machine IR — post-PHIElimination (non-SSA)"]
     RS["RebuildSSA (temporary bridge)<br/>re-establish SSA: split multi-def vregs, insert PHIs"]
+    SU["SimplifyUndefPHI<br/>flag fully-undef PHI operands; fold single-real-operand undef PHIs"]
     SP["SSA Spiller<br/>lower register pressure to the per-class budget"]
     RA["SSA Register Allocator<br/>PEO coloring, then SSA destruction + operand rewrite"]
     LS["Spill-code lowering<br/>materialize spill/reload pseudos (two paths — see below)"]
     OUT["Machine IR — non-SSA, physical registers"]
 
-    IN --> RS --> SP --> RA --> LS --> OUT
+    IN --> RS --> SU --> SP --> RA --> LS --> OUT
 
     style RS fill:#e2e3e5,stroke:#6c757d,color:#000,stroke-dasharray: 5 5
+    style SU fill:#e2d9f3,stroke:#6f42c1,color:#000
     style SP fill:#d4edda,stroke:#28a745,color:#000
     style RA fill:#fff3cd,stroke:#ffc107,color:#000
     style LS fill:#cce5ff,stroke:#004085,color:#000
@@ -41,8 +43,12 @@ flowchart TD
 **Pipeline wiring** ([AMDGPUTargetMachine.cpp](https://github.com/alex-t/llvm-project/blob/ssara/llvm/lib/Target/AMDGPU/AMDGPUTargetMachine.cpp)):
 
 ```cpp
-if (EnableSSARegAlloc) {                       // -amdgpu-ssa-regalloc
+if (EnableSSARegAlloc) {                       // -amdgpu-ssa-regalloc (Hidden, default OFF)
   addPass(createAMDGPURebuildSSALegacyPass());
+  // Undef-aware PHI simplification: flag fully-undef PHI operands and fold
+  // single-real-operand undef PHIs. Must remain the last pass before the
+  // spiller (it survives the eventual removal of the RebuildSSA bridge).
+  addPass(createAMDGPUSimplifyUndefPHIPass());
   addPass(createAMDGPUSSARegisterSpillerPass());
   // Spiller repairs SSA inline (reaching-VNI reconstruction) and returns SSA,
   // so NO second RebuildSSA is needed here.
@@ -50,6 +56,9 @@ if (EnableSSARegAlloc) {                       // -amdgpu-ssa-regalloc
   return true;
 }
 ```
+
+The chain is legacy-PM-only (there is no new-pass-manager wiring yet) and gated
+behind the hidden, default-off `-amdgpu-ssa-regalloc` option.
 
 Pre-RA passes (`PHIElimination`, `TwoAddressInstruction`, `RegisterCoalescer`,
 `RenameIndependentSubregs`) run unchanged before this chain — which is exactly
@@ -123,6 +132,7 @@ coloring and SSA destruction:
 | **SSA Spiller** | [[SSA_SPILLER_DESIGN]] | Active |
 | **Reload placement** | [[Reload_join_phi_coalescing]] | Active (supersedes [[Reload_optimizer]]) |
 | **SSA Register Allocator** | [[SSA_RA_Coloring]] | Active |
+| **SimplifyUndefPHI** | [[PHI_Coalescer]] (§ current reality) | Active (undef-PHI slice; runs before spiller) |
 | **MachineLaneSSAUpdater** | [[MachineLaneSSAUpdater]] | Active |
 | **Per-class RP tracker** | [[GCNUpwardRPTracker_PerClassRP]] | Proposed |
 | **Fragmentation-aware spiller** | [[Spiller_Redesign]] | Proposed |
@@ -175,6 +185,13 @@ The spiller keeps SSA form by using [[MachineLaneSSAUpdater]] to repair SSA
 `VirtRegRewriter` does on the greedy path (sets `NoPHIs`/`NoVRegs`, preserves
 `TracksLiveness`).
 
+> **Current gap.** `destroySSAAndRewrite` is **skipped** (early return) when the
+> function still contains SI control-flow pseudos (`SI_IF`, `SI_ELSE`,
+> `SI_IF_BREAK`, `SI_LOOP`, `SI_END_CF`) — detected by `hasCFPseudos`. Coloring
+> still runs, but PHI lowering / operand rewrite is not performed for those
+> functions (they are counted in `NumPhiFuncsSkippedCF`). SSA destruction of
+> functions with unlowered SI control flow is not yet handled.
+
 ### 6. Coloring Never Inserts Instructions
 Coloring is a pure assignment; all spill/reload placement lives in the spiller.
 This is a hard invariant — spill-on-placement-failure inside coloring is
@@ -207,7 +224,8 @@ SSA is maintained throughout.
 
 | Feature | Description | Priority |
 |---------|-------------|----------|
-| PHI coalescer — greedy affinity (Option B + sub-reg hints) | 🟡 Done in `ssara-claude`, uncommitted; corpus-accepted (weighted φ-copies −62%, CRASH 55→47). Greedy color choice, not yet recoloring. See [[PHI_Coalescer#10.1 Status (2026-07-14)]] | — |
+| PHI coalescer — greedy affinity (Option B + sub-reg hints) | ✅ Committed to `ssara` (`3deb087e`); `pickFreePhysReg` consults `collectPhiHints`. Greedy color choice, not yet recoloring. See [[PHI_Coalescer#10.1 Status (2026-07-14)]] | — |
+| Undef-PHI simplifier + PHI-copy metric | ✅ Committed to `ssara` (`80fc7d8d`, `da78e671`); `AMDGPUSimplifyUndefPHI` runs before the spiller | — |
 | PHI coalescer — real recoloring (paper §4.3, Option A) | Recolor PHI operands to reduce copies (design: [[PHI_Coalescer]]); durable fix for cross-call [[SSA_RA_Coloring#Cross-Call Color Constraint\|physreg-exhaustion]] — 99.8% of residual copies feasible | High |
 | Per-class RP / feasibility gate | [[GCNUpwardRPTracker_PerClassRP]] + [[Spiller_Redesign]] fragmentation-aware spilling & greedy fallback | High |
 | Spiller/RA budget reconcile | Spiller budgets via `getMaxNumVGPRs` (128 on gfx90a incl. AGPR half); RA colors into `getNumAllocatableRegs(VGPR_32)`=64 | High |

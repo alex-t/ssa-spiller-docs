@@ -272,6 +272,49 @@ flowchart TD
 > (paper §4.3), coalescing by color choice (never graph merge, to preserve
 > chordality).
 
+#### Proposed fix — dedicated around-call-liver (ACL) pass (PRIORITY, not yet implemented)
+
+**This is the priority next implementation step (2026-07-15).** It also subsumes
+the ABI/call fragmentation that the spiller's precolored-tuple gate would
+otherwise chase — see [[SSA_SPILLER_DESIGN#Precolored-PR tuple-feasibility gate — DOWNSCOPED / DEFERRED (2026-07-15)]].
+
+Instead of a *global color bias* (tried, reverted), **partition** the allocation
+into two disjoint width-descending passes:
+
+1. **ACL pass first.** Color only the vregs live across ≥1 call, width-descending,
+   drawing from a **callee-saved-first** sub-order. Record `lastACLidx` = the pass
+   high-water mark.
+2. **Ordinary pass.** Color everything else, width-descending, with the ACL region
+   marked occupied (equivalently: resume from `lastACLidx`, not index 0).
+
+Why this is sound where the global bias was not:
+
+- **It's a partition, not a reordered global choice.** Each pass colors a chordal
+  subgraph in dominance order → optimal *for its subset*; the general population's
+  PEO order is untouched (the reason the biases regressed).
+- **No legal choice is surrendered.** A cross-call value already *cannot* take a
+  caller-saved reg (the `CallSites` clobber check forbids it), so forcing the ACL
+  subset into callee-saved only makes explicit a constraint the allocator enforces
+  one-value-at-a-time.
+- **Width-descending in each region keeps both sub-files unfragmented** (§4.2
+  argument, applied per region). Where CSRs sit in `getOrder` is irrelevant: the
+  ACL pass supplies its own CSR-first sub-order, the ordinary pass starts past the
+  ACL high-water.
+
+Pins to get right: (a) the ACL pass must draw from **callee-saved** physregs
+specifically (not "first N from 0"), or the values get clobbered; (b) budget =
+allocatable − **ACL_peak** (the pass high-water), not the whole CSR block, so a
+small cross-call set doesn't starve ordinary defs. **Reduces, does not
+eliminate:** if `ACL_peak` alone exceeds callee-saved capacity, still fall back to
+spilling (or AGPR coloring §4.8 for AV values).
+
+> Corpus estimate (2026-07-14, of the 35 analysable `Failed to find free physreg`
+> crashes): only **~5** have a real call frame (`ADJCALLSTACK`/`SI_CALL`:
+> mcexpr-knownbits-…, preserve-wwm-copy-dst-reg, tuple-allocation-failure,
+> undef-handling-crash-in-ra, whole-wave-register-copy). So the ACL pass is a
+> **smaller first-firing win** than the precolored-slot gate below — see
+> [[08-Worklog/2026-07-14-phicoalescer/REMAINING_CRASHES_CLASSIFICATION]].
+
 ### 4.8 AGPR-Coloring Gap: AV-class values are pinned to VGPR
 
 On split-file targets (gfx90a+) the vector register file is physically two
@@ -512,7 +555,17 @@ bb.1:
 ## 10. SSA Destruction (PHI lowering + permutation resolution)
 
 After coloring, `destroySSAAndRewrite` lowers PHIs to physical-register moves and
-rewrites virtual operands to physregs. A block's PHIs form a **parallel copy** on
+rewrites virtual operands to physregs.
+
+> **Gap — functions with unlowered SI control flow are skipped.**
+> `destroySSAAndRewrite` early-returns when `hasCFPseudos(MF)` finds any
+> `SI_IF` / `SI_ELSE` / `SI_IF_BREAK` / `SI_LOOP` / `SI_END_CF` terminator.
+> Coloring still runs, but for such functions PHI lowering + operand rewrite are
+> not performed (tracked as `NumPhiFuncsSkippedCF`); the measurable-φ fraction is
+> `NumPhiFuncsMeasured`. Destruction over unlowered SI control flow is not yet
+> implemented.
+
+A block's PHIs form a **parallel copy** on
 each incoming edge (all read, then all written); `resolvePermutation` sequences
 them, breaking cycles by a tiered strategy (`emitSwap` where a swap primitive
 exists):
@@ -556,9 +609,10 @@ cycle must use a scratch AGPR.
 | SSA destruction (PHI lowering + permutation) | ✅ Implemented (no-op / swap / XOR / scratch) |
 | SGPR-spill accounting → `SILowerSGPRSpills` | ✅ Implemented |
 | **Pipeline wiring (`-amdgpu-ssa-regalloc`)** | ✅ **Done — wired in `addRegAssignAndRewriteOptimized`; corpus-tested end-to-end** |
-| Physreg exhaustion / cross-call (needs coalescer) | 🔧 Open (§4.7; ~30 crashes) |
-| AGPR coloring for AV-class values (split-file targets) | 🔧 Open (§4.8; distinct contributor to exhaustion — AV values pinned to VGPR, AGPR file unused) |
-| PHI coalescing — greedy affinity (Option B + sub-reg hints) | 🟡 Done in `ssara-claude`, uncommitted; corpus-accepted (weighted φ-copies −62%, CRASH 55→47) — see [[PHI_Coalescer#10.1 Status (2026-07-14)]] |
+| Physreg exhaustion / cross-call | 🔧 Open (§4.7; ~30 crashes) — **ACL pass is the PRIORITY next step** (2026-07-15) |
+| AGPR coloring for AV-class values (split-file targets) | 🔧 Open (§4.8; #2 priority — AV cluster + biggest bucket) |
+| PHI coalescing — greedy affinity (Option B + sub-reg hints) | ✅ Committed to `ssara` (`3deb087e`); `pickFreePhysReg` consults `collectPhiHints` — see [[PHI_Coalescer#10.1 Status (2026-07-14)]] |
+| Undef-PHI simplifier + PHI-copy metric | ✅ Committed to `ssara` (`80fc7d8d`, `da78e671`); `AMDGPUSimplifyUndefPHI` runs before the spiller |
 | PHI coalescing — real recoloring (paper §4.3, Option A) | 🔧 Pending (durable fix for the above; 99.8% of residual copies feasible) — design: [[PHI_Coalescer]] |
 | Per-class / fragmentation-aware spilling | 🔧 Proposed ([[GCNUpwardRPTracker_PerClassRP]], [[Spiller_Redesign]]) |
 | Loop-filter fallback (`getVMPsToSpill`) | 🔧 Pending |

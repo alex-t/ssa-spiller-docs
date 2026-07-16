@@ -2,6 +2,14 @@
 
 Saved: 2026-05-14
 
+> **Status: DRAFT — NOT IMPLEMENTED.** This live-range splitter does **not**
+> exist in the shipped code. No `splitForOccupancy`, `planSplit`, `commitPlan`,
+> `findFreeInRange`, `isPhysRegFreeForRange`, `SplitPlan`/`RecolorPlan`/
+> `OccupancyPlan`, or related members are present in
+> `AMDGPUSSARegisterAllocator.{h,cpp}`. The allocator performs width-descending
+> PEO coloring and SSA destruction, but has no threshold-driven occupancy
+> splitting. Everything below is a proposed patch, retained for reference.
+
 ## Status: Under Review
 
 The patch implements threshold-driven LR splitting for occupancy improvement.

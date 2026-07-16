@@ -4,7 +4,9 @@
 
 ## Status
 
-📋 **Not implemented** — research topic with high complexity.
+✅ **Implemented** — performed inside the [[SSA_Register_Allocator_Impl|SSA Register Allocator]] as `destroySSAAndRewrite` (`lowerPHIs` → `rewriteOperands` → `eliminateRegSequences` → `addPhysRegLiveIns` → `finalizeProperties`). PHIs are lowered to predecessor-edge copies with parallel-copy cycle breaking (`resolvePermutation`), critical edges split on demand.
+
+> **Known gap**: destruction is **skipped** for functions that still contain SI control-flow pseudos (`SI_IF`/`SI_ELSE`/`SI_IF_BREAK`/`SI_LOOP`/`SI_END_CF`) — see `hasCFPseudos`. **Optimal** (minimal-copy) PHI elimination remains a research topic; the current implementation is correct but not copy-minimal (no full coalescer yet).
 
 ---
 
@@ -34,9 +36,11 @@ Eliminate PHI nodes with:
 
 ## Complexity
 
-**Very high** — this is an unresolved research topic.
-
-PHI elimination is trivial in theory (insert copies on predecessor edges), but doing it *optimally* (minimal copies, no unnecessary register pressure) is NP-hard in general.
+Correct PHI elimination is straightforward (insert copies on predecessor edges,
+break parallel-copy cycles) and **is implemented**. Doing it *optimally*
+(minimal copies, no unnecessary register pressure) is NP-hard in general and
+remains an open improvement — the current `resolvePermutation`-based lowering is
+correct but not copy-minimal.
 
 ## Challenges
 

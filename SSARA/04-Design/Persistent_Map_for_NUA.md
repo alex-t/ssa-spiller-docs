@@ -1,5 +1,12 @@
 # Persistent Map for Next-Use Analysis (NUA)
 
+> **Status: IDEA / NOT IMPLEMENTED.** No `ImmutableMap`-based persistent NUA
+> state exists in the tree. The shipped `AMDGPUNextUseAnalysis` stores full
+> per-instruction snapshots in a `DenseMap<const MachineInstr*, VRegDistances>`
+> (see `NextUseInfo` in `AMDGPUNextUseAnalysis.h`). The persistent/functional
+> map below is a proposed optimization to reduce that memory cost; it is not
+> wired in.
+
 Status: IDEA / RFE candidate  
 Scope: Next Use Analysis optimization  
 Audience: LLVM backend / SSA RA development  

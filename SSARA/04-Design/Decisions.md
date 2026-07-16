@@ -189,6 +189,20 @@ writelane/readlane happens later in `SILowerSGPRSpills`, once SGPRs are physical
 
 ---
 
+## Reset `NoPHIs` Only When Reconstruction Inserts a PHI
+
+After the spiller repairs SSA inline, it clears the `NoPHIs`
+`MachineFunctionProperty` **only** when reaching-VNI reconstruction actually
+inserted a merge PHI (gated on `repairSSAForNewDef`'s `PHIDefs` out-parameter),
+not whenever a reload was placed.
+
+**Reason:** clearing `NoPHIs` needlessly enables `MachineVerifier` checks gated on
+`!hasNoPHIs()` (e.g. the allocatable-physreg-live-in check), which would reject
+otherwise-legal pre-RA MIR. `IsSSA` is likewise **not** cleared after inline
+repair — the spiller returns SSA. (Mirrors `X86CmovConversion`.)
+
+---
+
 ## Static Next-Use-Analysis Limitation → `ReloadedRegs`
 
 NUA runs before spilling, so vregs it never saw (reload redefs, reconstruction

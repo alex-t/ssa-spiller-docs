@@ -1,5 +1,12 @@
 # SSA Spiller Redesign — Fragmentation-Aware, Per-Class Spilling
 
+> **Status: PROPOSED (not yet implemented).** Neither `getClassCapacity(RC)` nor
+> the `PreColoredUnits` BitVector nor the feasibility gate exist in the source;
+> the shipped spiller still uses a scalar per-class limit
+> (see [[SSA_SPILLER_DESIGN#Register budget: cap by allocatable-file size]]).
+> The current wired pipeline is `RebuildSSA → SimplifyUndefPHI → SSA Spiller →
+> SSA Coloring` (the mermaid diagrams below omit `SimplifyUndefPHI` for clarity).
+
 ## 1. Motivation & The Hard Invariant
 
 The SSA register allocator splits responsibilities so that **coloring is a pure,

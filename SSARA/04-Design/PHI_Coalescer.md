@@ -4,6 +4,22 @@ Design for the **real** PHI coalescer for the AMDGPU SSA register-allocation
 stack. This is the fixed-point recoloring pass from the paper, **not** the
 existing undef-PHI simplifier.
 
+> **Current reality (verify: `ssara` @ HEAD).** The full recoloring coalescer of
+> this document is **not implemented**. What exists and is **committed to
+> `ssara`** today is the tractable, greedy subset:
+> - **`AMDGPUSimplifyUndefPHI`** pass (`80fc7d8d`) — flags fully-undef PHI
+>   operands and folds single-real-operand undef PHIs; runs **before** the
+>   spiller (`AMDGPUSimplifyUndefPHI.cpp`, flags `-amdgpu-simplify-undef-phi[-flag|-fold]`,
+>   default on).
+> - **phi-affinity biased coloring** (`3deb087e`) — `pickFreePhysReg` consults
+>   `collectPhiHints` (weight $2^{\text{loopdepth}}$, sub-register composition
+>   both directions); it only biases the *color choice*, never recolors.
+> - **PHI-copy metric** (`da78e671`) — `STATISTIC` counters at SSA destruction
+>   (§9).
+>
+> The paper's Init/Test/Apply recoloring (Options A / cross-φ / per-lane) below
+> is **still future work**.
+
 ## Source Mapping
 - **Component**: SSA PHI Coalescer (recoloring, fixed-point maximizing)
 - **LLVM Target**: AMDGPU
@@ -19,9 +35,9 @@ existing undef-PHI simplifier.
 
 ## 1. Two different passes called "PHI coalescer"
 
-| | Undef-PHI simplifier (**done**) | Fixed-point coalescer (**this doc**) |
+| | Undef-PHI simplifier (**done, committed**) | Fixed-point coalescer (**this doc**) |
 |---|---|---|
-| File | `AMDGPUPHICoalescer.cpp` | new phase in `AMDGPUSSARegisterAllocator.cpp` |
+| File | `AMDGPUSimplifyUndefPHI.cpp` | new phase in `AMDGPUSSARegisterAllocator.cpp` |
 | Runs | **before** the spiller | **after** `color()`, **before** `lowerPHIs()` |
 | Operates on | MIR (flags/folds PHIs) | the **coloring** (re-picks physregs) |
 | Removes | *artificial* diamond-merge φs (one real op, rest undef) | copies for *genuine* φs by aligning colors |
@@ -480,10 +496,11 @@ copy count went down, spill count did not go up, occupancy did not drop".
 | 3 cross-φ pinning | 🔮 later | — |
 | 4 sub-register lanes (per-lane OptUnit) | 🔮 later | greedy sub-reg hints (1b) are a *cheaper subset*; per-lane *partial* tuple fixed points still need Option A |
 
-Implementation lives in `ssara-claude` (uncommitted); collected as patches under
-`../../08-Worklog/2026-07-14-phicoalescer/promote/`. Note steps 1/1b are
-**affinity-biased greedy coloring**, not the paper's recoloring coalescer — they
-capture fixed points that are *free to grab* in one forward pass, never recolor.
+Steps 0, 1 and 1b are now **committed to `ssara`** (`da78e671` PHI-copy metric,
+`3deb087e` phi-affinity biased coloring; the undef-PHI simplifier is `80fc7d8d`).
+Note steps 1/1b are **affinity-biased greedy coloring**, not the paper's
+recoloring coalescer — they capture fixed points that are *free to grab* in one
+forward pass, never recolor.
 
 ### 10.2 The feasibility ceiling is near-total (motivates Option A)
 
