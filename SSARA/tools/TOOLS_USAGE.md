@@ -2,7 +2,74 @@
 
 ## Overview
 
-This directory contains Python and PowerShell scripts for analyzing, visualizing, and debugging the SSA-aware register spiller implementation.
+This directory contains Python and PowerShell scripts for analyzing, visualizing, and debugging the SSA-aware register spiller and the SSA register allocator (SSARA).
+
+---
+
+## 🚦 Corpus Regression Gate
+
+### `harness_rescue.py` — full-corpus regression harness
+
+**Purpose:** The real gate for any SSARA change. Runs the whole
+`llvm/test/CodeGen/AMDGPU` corpus through `-amdgpu-ssa-regalloc` using each
+test's OWN `RUN:` line, compares against the default Greedy allocator, and
+classifies every outcome. The lit suite is far too narrow to catch allocator
+regressions; this is what decides whether a change is committable.
+
+**Full procedure: see `CORPUS-HARNESS.md` in this directory — it is the single
+source of truth.** The summary below is orientation only.
+
+**How it works:**
+- Extracts triple/`-mcpu`/`-global-isel` from each test's own RUN lines. Never
+  hardcode targets — a hand-rolled runner produces artifact crashes.
+- `--configs all` (default) emits one record per eligible RUN line, keyed by
+  `(test, config)`. ~3080 files → ~8250 records.
+- Buckets each record: `OK_BETTER`, `OK_EQUAL`, `MIXED`, `DIFF_COALESCING`,
+  `REGRESSION_OCC_OR_SPILL`, `CRASH`, `TIMEOUT`, plus `SKIP_*`.
+
+**Usage:**
+```bash
+# 1. Pin the binary: a run takes ~50-90 min and ninja will delete bin/llc
+#    under a live run, making every remaining test report "crash".
+cp <worktree>/build/user-debug/bin/llc /tmp/llc.<name>
+
+# 2. Detach it — a full run outlives an SSH session.
+screen -dmS corpus bash -c 'python3 harness_rescue.py run \
+  --llc /tmp/llc.<name> --out /tmp/corpus-<name> --configs all \
+  --ssa-extra "-amdgpu-ssa-acl-coloring -amdgpu-ssa-agpr-rescue \
+-amdgpu-ssa-region-rp -amdgpu-ssa-pre-spill-wa -amdgpu-ssa-phi-web-spill \
+-amdgpu-ssa-agpr-first" --jobs 32 > /tmp/corpus-<name>.log 2>&1'
+
+# 3. Judge the change by diff, never by eyeballing report.md counts.
+python3 harness_rescue.py diff --base <baseline-run> --out /tmp/corpus-<name>
+```
+
+**All six `--ssa-extra` flags are mandatory.** `--ssa-extra` overrides the flag
+set WHOLESALE, and the script's built-in default is stale. Dropping
+`-amdgpu-ssa-agpr-first` alone crashes AGPR-capable targets and reads as ~7 false
+regressions — it silently invalidated a full 87-minute run on 2026-08-25.
+
+**Output (under `--out`):**
+- `report.md` / `report.json` — buckets and crash classes; provenance under `_run`.
+- `run.json` — llc sha256, resolved flag set, verifier state, git HEAD of the
+  source tree. Written before the run starts, so a run that dies still says what
+  it was.
+- `results.jsonl` — one row per `(test, config)` incl. `ssara_argv`, the exact llc
+  command. This is the file to grep or parse.
+- `failed.txt` — every crashing command, copy-paste-runnable.
+
+**Flag-profile guard:** `diff` reconstructs each run's flag set from the recorded
+`ssara_argv` and **exits 2** if the two arms disagree. Comparing runs made with
+different flags is meaningless, and the guard works retroactively on runs made
+before provenance was recorded.
+
+**Archived baselines:** `github/scripts/corpus/runs/` — see the table in
+`CORPUS-HARNESS.md`. Pinned binaries are not preserved; rebuild from the commit.
+
+**Requirements:**
+- A fully built `llc` (check `${PIPESTATUS[0]}`, not the piped tail — a
+  half-linked binary makes EVERY test report "crash").
+- Python 3. No other dependencies.
 
 ---
 
@@ -368,6 +435,9 @@ Extend `analyze_spiller_tests.py` to extract additional metrics:
 
 ## 🔗 Related Documentation
 
+- **CORPUS-HARNESS.md** (this directory) - How to run the corpus gate; the single
+  source of truth for `harness_rescue.py`, its mandatory flag set, and the
+  archived reference baselines
 - **NOTES.md** - Complete technical diary and current status
 - **SPILL_PLACEMENT_DESIGN.md** - Algorithm design and rationale
 - **SSA_SPILLER_TEST_PATTERNS.md** - Test case patterns
@@ -385,6 +455,6 @@ For issues or questions:
 
 ---
 
-**Last Updated:** 2025-11-19
+**Last Updated:** 2026-08-25
 **Location:** `/path/to/ssa-spiller-docs/tools/`
 
