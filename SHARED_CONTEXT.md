@@ -1,7 +1,543 @@
 # Shared Context — SSA RA Project
 
 Cross-worktree knowledge base. Updated after significant sessions.
-Last updated: 2026-07-14
+Last updated: 2026-08-29
+
+## 2026-08-28/29 — SSARA lit suites RETIRED as a gate; lane-accurate interference probe; 16-bit swap fallback
+
+Worktree `ssara-wt-widthaware`, branch `weekend/prespill-widthaware`, on top of `400183d0ab0d`.
+UNCOMMITTED: +149/−22 across `AMDGPUSSARegisterAllocator.{h,cpp}`.
+
+### THE SSARA + SSASpiller LIT SUITES ARE NOT A GATE. IGNORE THEM ENTIRELY.
+
+User ruling (2026-08-29): **forget about the SSA RA lit tests completely.** They were authored for the
+now-ABANDONED design — NUA + EarlySpiller + the old RA — so their CHECK lines encode the expectations
+of machinery that no longer exists. A failure in
+`llvm/test/CodeGen/AMDGPU/SSARA` or `.../SSASpiller` carries NO information about the current
+allocator. Do not baseline against them, do not quote their pass counts as evidence, do not bisect
+their diffs. This SUPERSEDES every earlier entry that treated them as a signal, including
+"lit: 120 passed / 1 XFAIL / 17 failed" above, the older "86 pass + 1 legit XFAIL" figure, and the
+2026-08-25 proposal to gate a default-flag flip on "the 74 SSARA-invoking lit files".
+
+The corpus harness `ssa-spiller-docs/SSARA/tools/harness_rescue.py` is the ONLY regression gate,
+compared by per-test bucket TRANSITION against a named baseline.
+
+Knock-on effect: the empirical DEAD-ness argument for the `virgin-order` flag rested on
+`forensic-colorfail-scope.mir` and `forensic-failure-shape.mir` still passing FileCheck with the flag
+removed. Those are SSARA lit tests, so that evidence is void — the flag's fate must be argued from the
+corpus instead.
+
+### 16-bit swap fix — APPLIED and VERIFIED (`emitSwap`, `RegWidth == 16`)
+
+`V_SWAP_B16` is VOP1-encoded, so both operands must lie in `VGPR_16_Lo128` (lo16/hi16 of v0-v127);
+`emitSwap` emitted it unconditionally under `hasTrue16BitInsts()`. Latent until the lane-accurate
+interference probe first placed a 16-bit permutation cycle above v127. Fix: require
+`VGPR_16_Lo128RegClass.contains()` on BOTH operands, else emit a `V_XOR_B16_t16_e64` triplet (VOP3,
+reaches all of `VGPR_16`). That opcode carries source modifiers and op_sel, so its operand list is
+`dst, src0_mods, src0, src1_mods, src1, op_sel` and it cannot reuse the existing `EmitXorTriplet`.
+
+Verified on `amdgcn.bitcast.1024bit.ll [gfx1100 -mattr=+real-true16]`: exit 0, was
+`Illegal instruction detected: Operand has incorrect register class`. Fallback fired 85 times (255
+`v_xor_b16`, every triplet touching a register >= v128); no surviving `v_swap_b16` has an operand
+outside v0-v127. The `tahiti` crash on that file is pre-existing, byte-identical signature in baseline.
+
+### Corpus accounting settled: 3 real fixes; the 2 phantoms are upstream `XFAIL: *`
+
+Re-confirmed against the fresh binary: `identical-subrange-spill-infloop [gfx900]`,
+`spill-agpr [gfx908]`, `spill-agpr [gfx90a]` all exit 0. The two apparent fixes are
+reclassifications, proven twice over: `nullptr-long-address-spaces.ll` and
+`write-register-vgpr-into-sgpr.ll` each carry an unconditional `; XFAIL: *` plus
+`; REQUIRES: asserts` on lines 1-2, pass NO RA flag in their RUN lines, and fail identically with
+`-amdgpu-ssa-regalloc` removed (`Size <= 8 && "Invalid size"` in `MCAsmStreamer::emitValueImpl`;
+`illegal copy from vector register to SGPR`). The newer harness buckets them `SKIP_EXPECTED_FAIL`; the
+archived 0828 baseline predates that detection. TRAP when diffing against any older archive.
+
+### Still open
+
+The physreg leg of the interference test uses `getCachedRegUnit`, which materializes ranges only for
+ABI live-ins, so mid-function physregs (`$vcc`, `$exec`) are not consulted — silent interference
+misses, wrong assignment rather than a crash. Fix is `getRegUnit`, not yet applied. The docs repo is
+messy and its design documents are NOT to be reworked until the design is finally settled.
+
+### Process lesson
+
+A throwaway python replay script substituted only `/tmp/llc.laneexact` in harness command lines, so the
+five rows carrying `/tmp/llc.rescuebound-0827` silently re-ran the OLD baseline binary and produced a
+fake "the fixes regressed" panic. For a handful of cases, run the commands MANUALLY.
+
+## 2026-08-27/28 — AGPR-home-rescue bound APPLIED, revert-proven on the reproducer; lit clean; corpus gate at 300s
+
+Worktree `ssara-wt-widthaware`, branch `weekend/prespill-widthaware`, on top of `400183d0ab0d`.
+UNCOMMITTED (+20/−1 across `AMDGPUSSARegisterAllocator.{h,cpp}`), backup `/tmp/rescue-bound.patch`.
+
+**BOTH DIRECTIONS PROVEN on the real reproducer**, same flags, binaries differing only by the
+patch (the pre-fix binary was rebuilt from a `git stash` of the two files, then restored and
+re-verified byte-identical against the backup patch):
+
+| binary | exit | elapsed | result |
+| --- | --- | --- | --- |
+| pre-fix | 124 | 120s, killed | still churning, no output |
+| with fix | 134 | **3s** | `[worklist-drained] cannot place %213 (VGPR file). GENUINE POINT-OVER-PRESSURE: 65 dwords live at 140r but only 64 registers` |
+
+The abort names an ORIGINAL value (`%213`), not a rescue copy, and comes from the terminal sweep
+in `@test_rewrite_mfma_direct_copy_from_agpr_class`. The overshoot is ONE register (65 vs 64) —
+a margin a working pre-spiller should close, so this is an acceptance case for the pressure-model
+redesign, not a coloring bug.
+
+**PROCESS LESSON — reproduce with the test's OWN RUN line, never a hand-built command.** A first
+attempt dropped `-amdgpu-mfma-vgpr-form` from `; RUN: llc -mcpu=gfx942 -amdgpu-mfma-vgpr-form`,
+and the run exited 0 in 4.5s, which looks exactly like "the bug is gone". That flag is what drives
+values into the AGPR path at all. Read the RUN line, or take the command from the harness.
+
+**Lit: 120 passed / 1 XFAIL / 17 failed** over SSARA + SSASpiller + MachineLaneSSAUpdater +
+NextUseAnalysis (138 tests) — the same 17 pre-existing failures. Note the pass count is 120 rather
+than the previously recorded 103 ONLY because `NextUseAnalysis` (17 passing) was included in the
+set; nothing changed.
+
+**Corpus gate PASSED — 0 regressions, 0 fixes, exactly the 2 predicted unmaskings.** 8250 records
+over 3080 files in 2819s; pinned `/tmp/llc.rescuebound-0827` (sha `4eb769dd5fc1`, head
+`400183d0ab0d+dirty`), `--configs all --jobs 32 --timeout 300 --ssa-extra ''`, corpus path from the
+`ssara` tree. Archived (with the patch) to `scripts/corpus/archive-rescuebound-0828` (19 MB).
+`diff` vs `archive-400183d0-0826`: `FIXED 0`, `REGRESSED 0`, `TIMEOUT->CRASH 2` —
+`rewrite-vgpr-mfma-to-agpr.ll [gfx942]` (our hang, now an honest report) and
+`amdgcn.bitcast.1024bit.ll [tahiti]` (the crash that used to land at 153s). The budget-mismatch
+warning fired as designed (120 vs 300).
+
+**At a 300s budget the TIMEOUT bucket VANISHES ENTIRELY (19 -> 0)**, so CRASH 13 is now the whole
+failure population and nothing is hidden — the predicted 13 confirmed by measurement. The 13, by
+class: 2x `UNREACHABLE` in the allocator (`indirect-addressing-si-gfx9 [gfx900]`,
+`schedule-xdl-resource [gfx908]`); 4x point-over-pressure (`spill-agpr [gfx908]` + `[gfx90a]` at
+1108r, `spill-scavenge-offset [verde]` SGPR `no-reload-fits` at 1208r,
+`rewrite-vgpr-mfma-to-agpr [gfx942]` at 140r); 1x `MO.isUndef() && "non-undef virtual register not
+colored"` (`debug-value.ll`); 1x unclassified abort (`identical-subrange-spill-infloop [gfx900]`);
+1x `Use not jointly dominated by defs` (`amdgcn.bitcast.1024bit [tahiti]`); 1x `Size <= N &&
+"Invalid size"` (`nullptr-long-address-spaces`); 1x `cannot find enough VGPRs for wwm-regalloc`
+(`scc-clobbered-sgpr-to-vmem-spill [gfx900]`); 1x `Operand has incorrect register class`
+(`unspill-vgpr-after-rewrite-vgpr-mfma [gfx90a]`); 1x `illegal copy from vector register to SGPR`
+(`write-register-vgpr-into-sgpr [bonaire]`). **Run the gate at `--timeout 300` from now on** —
+2819s wall, same as the 120s run, because the artifacts finish instead of burning the full cutoff.
+
+**Exactly 19 records changed bucket and NOTHING else in the 8250 moved** (verified as a multiset per
+`(test,config)`): 2 -> `CRASH`; 6 -> `OK_EQUAL` (`shufflevector.v2{bf16,f16,i16}.v8*` x gfx90a,
+gfx942); 6 -> `DIFF_COALESCING` (`v2{f32,i32,p3}` x 2); 4 -> `REGRESSION_OCC_OR_SPILL`; 1 ->
+`PREEXISTING_FAIL` (`memintrinsic-unroll [gfx1030]` — Greedy needs 425s so it now exceeds the 300s
+budget itself). `MIXED`, `OK_BETTER`, `NO_METRICS` and all nine skip buckets are identical to the
+record.
+
+**NEW WORK ITEM the raised budget exposed (not caused by the patch): 4 real occupancy/spill
+regressions vs Greedy** that were previously invisible because those configs only ever timed out —
+`amdgcn.bitcast.1024bit [gfx900]` and `[tonga]`, `shufflevector.v2i64.v8i64 [gfx90a]` and
+`[gfx942]`.
+
+**THE FAILURE COUNT IS 11, NOT 13 — and the harness was MISSING lit `XFAIL`** (2026-08-28). Two
+CRASH records fail IDENTICALLY under Greedy because upstream marks them `; XFAIL: *`:
+`write-register-vgpr-into-sgpr.ll [bonaire]` (`illegal copy from vector register to SGPR`, with the
+in-test comment saying there is little that can be done about it) and
+`nullptr-long-address-spaces.ll [?]` (`MCAsmStreamer.cpp:1338 Assertion Size <= 8`, an ASM-PRINTER
+bug, no register allocation involved). Root cause of the misclassification: `SKIP_EXPECTED_FAIL`
+fired ONLY when a RUN line started with `not llc`; the harness never read lit's `XFAIL:` directive,
+and an XFAIL file's RUN line is a plain `llc`. Compounded by the harness's own design note — "on the
+CRASH path Greedy does NOT normally run" — so a CRASH record is never checked against Greedy.
+FIXED: new `has_xfail()` + `XFAIL_RE`, checked per file in `process()` before any RUN line is
+considered; verified all 6 XFAIL files in the corpus now bucket `SKIP_EXPECTED_FAIL` and non-XFAIL
+files are unaffected. Effect on the 0828 run: CRASH 13 -> **11**, and
+`REGRESSION_OCC_OR_SPILL` 117 -> **112** (5 more records were the XFAIL
+`vgpr-spill-emergency-stack-slot-compute.ll` across 5 configs). A diff against any older archive
+will therefore show those records as `FIXED` — that is the reclassification, not a code change.
+
+**ROOT-CAUSE CLASSIFICATION of the 11 real failures** (from the per-crash stderr in
+`/tmp/corpus-rescuebound-0827/stderr`, not from signatures):
+
+| family | n | evidence | status |
+| --- | --- | --- | --- |
+| A. Stage-3 `reduceRegionPressure` under-relieves | 4 | all abort in `reportPointOverPressure` (RA:2907); margins are **1-3 dwords**: `spill-agpr [gfx908]` 33 vs 31, `[gfx90a]` 34 vs 32 (both `@max_32regs_mfma32`), `spill-scavenge-offset [verde]` SGPR 42 vs 41 via `Floor` 3163, `rewrite-vgpr-mfma-to-agpr [gfx942]` 65 vs 64 | CONFIRMED |
+| A'. same stage, null `KillMI` segfault | 1 | `identical-subrange-spill-infloop [gfx900] @main`: SIGSEGV at `SSASpillEmitter.cpp:597` `DT->dominates(KillMI,&UseMI)` <- `:144` <- the victim spill at RA~2097 that passes `LIS->getInterval(BestB).beginIndex()` as the kill index | CONFIRMED — matches the 2026-08-25 paper analysis exactly |
+| B. tied-operand coloring invariant | 2 | `llvm_unreachable("Tied use must be colored already or undef")` RA:3737 <- 3740 <- 5256; `indirect-addressing-si-gfx9 [gfx900] @insertelement_with_call`, `schedule-xdl-resource [gfx908]` | HYPOTHESIS: the tied use's def was queued uncolorable/spilled, so no `ColorMap` entry existed when the tied def was processed |
+| C. VGPR budget does not reserve for the downstream WWM allocator | 2 | both start with `error: cannot find enough VGPRs for wwm-regalloc`: `scc-clobbered-sgpr-to-vmem-spill [gfx900]` (clean error), `amdgcn.bitcast.1024bit [tahiti]` (then `Use not jointly dominated by defs` from `LiveIntervalCalc.cpp:192` inside **Greedy**) | first symptom CONFIRMED shared; the cascade is a HYPOTHESIS |
+| D. post-rewrite MIR invalid | 1 | `unspill-vgpr-after-rewrite-vgpr-mfma [gfx90a]`: verifier `Operand has incorrect register class` + `Illegal physical register for instruction` (2 errors) | HYPOTHESIS: arch-VGPR vs AGPR class confusion on gfx90a's split file |
+| E. value reaches rewrite uncolored | 1 | `debug-value.ll @wobble`: `assert(MO.isUndef() && "non-undef virtual register not colored")` RA:4615 | HYPOTHESIS: a path leaves a value uncolored WITHOUT queueing it to `UncolorableVRegs` (the queueing the rescue relies on) |
+
+**5 of the 11 (families A + A') are the pending pressure-model redesign**, and the margins say these
+are NOT structural infeasibility — three of the four are over capacity by 1-2 registers.
+
+**TOOLING CAVEAT — 970 keys carry MORE THAN ONE record**, because several tests have multiple RUN
+lines that map to the same config tag. Keying a dict on `(test,config)` silently drops one record
+per duplicate: it made 19 timeout transitions look like 18 and made the `PREEXISTING_FAIL` entry
+disappear entirely. Always diff results as a MULTISET. `cmd_diff` reached the right crash answer
+here, but whether it collapses duplicates the same way is UNAUDITED.
+
+**Host fact:** 10 orphaned `AllClangUnitTests` processes owned by `paakan`, reparented to init,
+had been spinning at 99.8% CPU each since 2026-03-04 (176 days, ~10 of 128 cores). Killed by the
+user via `sudo pkill -u paakan -f AllClangUnitTests`. Worth re-checking `ps -eo user,pcpu` before
+trusting any timing-sensitive corpus measurement.
+
+## 2026-08-26 — flag cleanup A/B/C committed (7 flags gone); corpus gate 0 transitions; TIMEOUT triage added; true failure count is 13; AGPR-rescue non-termination root-caused
+
+Worktree `ssara-wt-widthaware`, branch `weekend/prespill-widthaware`. All commits created BY
+THE USER — the 2026-08-25 process conflict is **RESOLVED**: AI commits are prohibited because
+this workspace is potentially public. The agent prepares and stages only.
+
+**Three cleanup commits landed** (on top of `f3869a20da99`):
+
+| commit | removes | net |
+| --- | --- | --- |
+| `75b0ea42c988` | dead code: width-tier virgin order + everything it gated, naive pre-spiller (`preSpillToLimit`), slot-delta probe (`dumpSpanWidthDelta`) | −546 |
+| `05dc22aa5401` | five default-ON flags, code made unconditional: `acl-coloring`, `pre-spill-wa`, `agpr-rescue`, `region-rp`, `phi-web-spill` | −103 |
+| `400183d0ab0d` | `-amdgpu-ssa-agpr-first`, hardcoded ON at all eight sites + emitter plumbing | −7 |
+
+Commit B also rewrote the width-aware pre-spiller's doc comment to stand ABSOLUTELY — it had
+described itself by contrast with the naive twin A deleted, leaving five dangling references.
+
+**The `agpr-first` in-tree comment was INVERTED at HEAD.** It claimed the arch-VGPR metric caused
+"undefined physical register" crashes on `buffer-fat-pointer-*`. Measured on the A+B binary: the
+three `buffer-fat-pointer-atomicrmw-{fadd,fmax,fmin}.ll` pass either way, and
+`buffer-fat-pointers-memcpy.ll` **aborts with the flag OFF** on gfx90a AND gfx942
+(`classified-infeasible: cannot place %163 (VGPR file). FEASIBLE YET UNRECOVERED (allocator
+bug)`) while completing with it ON. So the SHIPPING DEFAULT was the failing path and hardcoding
+ON is a fix. Every corpus run of record passed the flag ON — **read `run.json` to learn a run's
+flags, never the harness's built-in list** (that list never contained `agpr-first`; it arrived via
+`--ssa-extra`). Semantics for reference: `getArchVGPRNum()` = `VGPR+AVGPR`; `getVGPRNum(false)` =
+`max(VGPR+AVGPR, AGPR)`; three of the eight sites were NOT subtarget-guarded, so the flag also
+changed the reload-RP metric on gfx908-class targets.
+
+**Corpus gate: 8250 records, ZERO bucket transitions.** `/tmp/corpus-abc-0826` → archived
+`scripts/corpus/archive-400183d0-0826` (19 MB). `--ssa-extra '' --configs all --jobs 32 --timeout
+120`, 3080 files, 2797s. CRASH 11 / TIMEOUT 19 with identical test SETS vs
+`archive-f3869a2-0825`, nine crash-signature classes byte-identical, `(test,bucket)` multiset
+equal in both directions. Lit unchanged: 103 passed / 1 XFAIL / 17 pre-existing failures.
+`--ssa-extra ''` still passes `-amdgpu-ssa-regalloc` (it only controls flags appended after it),
+independently confirmed by the bucket mix (146 `DIFF_COALESCING`, 111 `OK_BETTER`).
+
+**The true failure count is 13, not 11 and not 30.** Measured both legs of all 19 TIMEOUT records
+at a 600s budget:
+
+| n | test / configs | SSARA vs Greedy | verdict |
+| --- | --- | --- | --- |
+| 14 | `shufflevector.v2*.v8*.ll` gfx90a+gfx942 | 126-133s vs 124-129s | artifact — Greedy also >120s |
+| 1 | `memintrinsic-unroll.ll` | 135s vs **425s** | artifact — SSARA 3x FASTER |
+| 2 | `amdgcn.bitcast.1024bit.ll` tonga/gfx900 | 146-176s vs 66-68s | `slow_ok`, ~2.5x slower |
+| 1 | `amdgcn.bitcast.1024bit.ll` **tahiti** | aborts at 153s | **crash masked by the cutoff** |
+| 1 | `rewrite-vgpr-mfma-to-agpr.ll` **gfx942** | >600s vs 17s | **genuine hang** |
+
+Input size explains the family: median corpus file is 7 KB; these are 90 KB-12.6 MB (578
+functions / 238k lines). The masked crash is `cannot find enough VGPRs for wwm-regalloc` then
+`LLVM ERROR: Use not jointly dominated by defs` in **Greedy** on `@bitcast_v64bf16_to_v128i8_scalar`
+— the joint-domination property of `5fde0ed1dd8d` failing DOWNSTREAM of SSARA. Queued.
+
+**Harness (`SSARA/tools/harness_rescue.py`, UNCOMMITTED on branch `work`; working copy
+`scripts/corpus/harness_rescue.py` re-synced).** User waived review.
+- CRITICAL: `SSA_EXTRA_FLAGS` is now `[]` — it still listed three flags deleted by A/B, so any
+  default invocation would fail all 3080 tests with "Unknown command line argument".
+- TIMEOUT triage: on an SSARA timeout, run Greedy at the SAME budget; if Greedy finished, re-run
+  SSARA at `--timeout-extend` × budget (default 3). Verdicts `both` / `slow_ok` / `late_crash`
+  (captures signature + paste-runnable repro) / `hang`, in the record and a `## TIMEOUT triage`
+  report section. **The bucket stays `TIMEOUT`** so per-test transition diffs against archived
+  runs stay valid. `cmd_diff` now warns on a `--timeout` mismatch between runs and lists
+  `late_crash` records as HIDDEN FAILURES. Default timeout left at 120 (help recommends 300).
+- All four verdicts validated on real inputs, incl. `slow_ok` = `amdgcn.bitcast.1024bit.ll
+  [gfx1100]` (Greedy 54-58s under a 60s budget, SSARA 92-99s of 180s).
+- `/tmp/timeout-probe/probe.py` deliberately NOT kept — every capability moved into the harness;
+  keeping it would duplicate logic that must not drift.
+
+**AGPR-home-rescue non-termination — ROOT-CAUSED; fix APPLIED 2026-08-27 and verified in BOTH
+directions (see the 2026-08-28 entry below).** `rewrite-vgpr-mfma-to-agpr.ll [gfx942]` makes real
+but unbounded progress: `tryAGPRHomeRescue` mints one `%tmp:VGPR = COPY R` per VGPR-only use, and
+a copy that fails to color is appended to `UncolorableVRegs` (~2830, under a comment claiming it
+cannot happen). TWO loops then walk into those copies, because both re-evaluate their bound over
+values queued while they run: the drain loop (`PassEnd = UncolorableVRegs.size()` at ~5374) and the
+terminal sweep (`I < UncolorableVRegs.size()` at ~5379). And the rescue has FOUR call sites, not
+one — 3135 `AGPRRelief`, 3148 `Floor`, 3173 `Infeasible` inside `recoverUncolorable`, plus 5383 —
+which is exactly why the guard belongs in the CALLEE. WHICH loop spun was never determined (hit
+counts were collected, not backtraces) and the fix does not depend on it. EVIDENCE: gdb breakpoint
+on the push-back hit **9,706 times in 7 minutes, still climbing**; consecutive vregs
+`%6909`…`%6915`, each `-> AGPR, 1 a->v copies`. Both `agpr-first` settings fail this test, so
+Commit C added no failure. Fix (4 minimal edits): `SmallDenseSet<Register,8> RescueCopies` in the
+`.h`, cleared PER FUNCTION only (a copy stays a copy across the full recolor that clears
+`UncolorableVRegs` a second time); early `return false` when `RescueCopies.count(R)` (a rescue copy
+exists precisely to occupy a VGPR at one instruction, so AGPR-homing it cannot satisfy that use);
+`insert(Tmp)` at creation; replace the false comment (the `push_back` itself MUST stay — it is the
+only thing that keeps an uncolored live value from reaching `rewriteStage`, where
+`assert(MO.isUndef() && "non-undef virtual register not colored")` fires, or in a release build a
+live value silently gets an arbitrary physreg). No defensive loop snapshot — with the guard the
+vector grows at most once per rescue. UNVERIFIED: that nothing succeeding today depends on a
+NESTED rescue; the corpus run settles it.
+
+**Next session:** (1) apply the rescue bound on approval → repro must abort in seconds with
+`GENUINE POINT-OVER-PRESSURE`, lit stays 103/1/17, corpus at `--timeout 300` vs
+`archive-400183d0-0826` expecting ONLY mfma `TIMEOUT`→`CRASH` (reported as already-failing, not a
+regression). (2) Multi-block pressure-model redesign steps (a)-(d) from 2026-08-25, canary
+`cf512`; acceptance cases are concrete now — 5 of the 13 real failures are pressure not relieved
+before coloring (2 VGPR `[worklist-drained]`, 1 SGPR `[no-reload-fits]`, mfma, +1). (3) Queued:
+the `wwm-regalloc` joint-domination failure; 2x `UNREACHABLE executed at
+AMDGPUSSARegisterAllocator.cpp`.
+
+**Failure population at `400183d0ab0d` (13):** 2x allocator `UNREACHABLE`, 2x VGPR
+`[worklist-drained]` point-over-pressure, 1x SGPR `[no-reload-fits]`, 1x `MO.isUndef() &&
+"non-undef virtual register not colored"`, 1x `Size <= N && "Invalid size"`, 1x `wwm-regalloc`
+VGPR exhaustion, 1x `Operand has incorrect register class`, 1x `illegal copy from vector register
+to SGPR`, 1x unclassified `identical-subrange-spill-infloop` abort, 1x mfma hang, 1x masked tahiti
+crash.
+
+**Reusable technique — to run lit as if a flag were hardcoded, shim the BIN, not the PATH.** lit
+resolves `llc` by absolute path, so PATH interposition does nothing; copy
+`build/user-debug/bin/llc` aside and place a 3-line `exec` wrapper at that exact path, then
+restore. This is how Commit C was measured against the 74 SSARA-invoking lit tests.
+
+**`AGENTS.md` delta still PENDING manual apply** — the edit-guard blocks the
+`/work/atimofee/sandbox/github/ssara` path prefix, which `ssara-wt-widthaware` shares, so the
+documented memory-update exemption stays unreachable. Exact text in
+`SSARA/08-Worklog/NOTES.md`, section 2026-08-26, last subsection.
+
+## 2026-08-25 — joint-domination undef flagging + dead-def store skip committed (corpus CRASH 15 -> 11); Stage-3 multi-block pressure model redesigned on paper; flag audit
+
+Worktree `ssara-wt-widthaware`, branch `weekend/prespill-widthaware`.
+
+**Two commits landed** (both verified in `git log`, on top of `76ecaa1369d1`):
+- `5fde0ed1dd8d` — **undef flagging must test JOINT DOMINATION, not liveness.** The
+  flagging added in `76ecaa1369d1` used `SR.getVNInfoAt(useSlot)` and marked a read
+  undef when no lane was live there. Live segments are half-open, so a KILLING use
+  sits exactly at its own segment's END and `getVNInfoAt` returns null for a
+  perfectly live lane: nearly every last use got flagged undef, `updateDeadFlags`
+  then saw the only reader gone, the def went dead, and half of a split lane pair
+  was never written -> verifier "Using an undefined physical register". Swapping to
+  `getVNInfoBefore` is necessary but NOT sufficient — liveness AT the use cannot
+  decide this at all, because a lane can be live along one edge and undefined along
+  another. The property the next whole-value LiveIntervals computation demands is
+  joint domination (a def of the read lanes on EVERY path to the use). Implemented
+  per read lane in `MachineLaneSSAUpdater.cpp` (~lines 312-373): no reaching value
+  => undef; a block-boundary value (live-range phi, NOT a PHI instruction) => undef
+  unless every predecessor carries the lane out; otherwise => undef iff the
+  reaching def does not dominate the use (one dominance query, valid because the
+  updater maintains SSA). PHI-defined values are exempt (per-edge by construction).
+- `f3869a20da99` — **do not store a dead def at its definition.**
+  `SSASpillEmitter::spillAtDefinition()` (~line 486) emitted the save right after a
+  DEAD def, leaving `dead %v = ...` followed by a read of `%v`, which the verifier
+  rejects once colored. The function already guarded the twin IMPLICIT_DEF case for
+  exactly this reason. Skipping is COMPLETE, not partial: with no readers
+  `buildDomGroupsForSpill` emits no reload. Instance: `dead %202:sreg_64`, the
+  unused sdst of a V_DIV_SCALE, stored into `%stack.12` as `$sgpr52_sgpr53`. A
+  latent hole exposed only because region-rp's victim selection changed.
+
+**Corpus gate: CRASH 15 -> 11, 4 REAL fixes, 0 regressions.** Run `/tmp/corpus-f3869a2`
+(dies at reboot); metadata archived to
+`/work/atimofee/sandbox/github/scripts/corpus/archive-f3869a2-0825` (20 MB:
+`results.jsonl`, `run.json`, `report.md`, `failed.txt`). Binary `/tmp/llc.f3869a2-0825`
+(`sha256` 9c401ea68f28…), `head=f3869a20da99`, all six SSA flags, `--configs all
+--jobs 32 --timeout 120`, 3080 files -> **8250** (test x config) records, ~47 min.
+Baseline `/tmp/corpus-newfixes-0825` (same 8250/3080). Fixed, all four formerly
+"Using an undefined physical register": `flat_atomics_i64_system.ll [gfx900]`,
+`insert_vector_elt.v2bf16.ll [tahiti]`, `si-sgpr-spill.ll [tahiti]`,
+`si-sgpr-spill.ll [tonga]`.
+
+**UNRESOLVED (not progress).** `unspill-vgpr-after-rewrite-vgpr-mfma.ll [gfx90a]`
+changed SIGNATURE, "Using an undefined physical register" -> "Operand has incorrect
+register class", and still fails. Per `regression-baseline-is-truth` a failure that
+merely changes shape is an open regression; needs triage. The other 10 remaining
+failures carry paste-ready `llc` command lines in `archive-f3869a2-0825/failed.txt`:
+`indirect-addressing-si-gfx9 [gfx900]`, `write-register-vgpr-into-sgpr [bonaire]`,
+`identical-subrange-spill-infloop [gfx900]`, `schedule-xdl-resource [gfx908]`,
+`spill-agpr [gfx908]`, `spill-agpr [gfx90a]`, `spill-scavenge-offset [verde]`,
+`nullptr-long-address-spaces`, `scc-clobbered-sgpr-to-vmem-spill [gfx900]`,
+`debug-value`.
+
+**Stage 3's private pressure model is invalid across blocks — redesign DRAFTED, NOT
+implemented.** `reduceRegionPressure` (`AMDGPUSSARegisterAllocator.cpp` ~2324) carries
+its own model: its `Iv` struct collapses each value to the hull
+`[beginIndex, endIndex)` (line 2360) so liveness HOLES stop existing; it sorts events
+on one global slot axis with no CFG awareness, so a "region" spans blocks (observed
+`[304e,1616r)` over bb.0-bb.6) and sums pressure from mutually exclusive divergent
+paths; it then fabricates a `TightRegion` from such a region
+(`TR.MBB = LIS->getMBBFromIndex(R.S)`, line 2482), violating that struct's own
+documented invariant `SlotIndex Start, End; // half-open, within MBB` (.h line 309),
+and hands the malformed view to `costOfSpilling`; coverage is hull intersection,
+which is how `%18` was picked as victim with `cover=8` for a region sitting inside
+its liveness HOLE; relief is CREDITED (`R.Peak -= BestW`, line 2618) rather than
+measured; and the kill index is `LIS->getInterval(BestB).beginIndex()` (line 2605),
+contradicting the stage's own documented contract ("kill at R.Start") and able to be
+a block-boundary slot — the null-`KillMI` segfault in
+`identical-subrange-spill-infloop`.
+
+**KEY DISCOVERY: the CFG-correct machinery already exists in-tree and Stage 3 simply
+does not use it.** `findTightRegions` (line 1601) is per-MBB, seeds
+`GCNUpwardRPTracker` at block end and recedes, and is PHI-aware (skips PHI slots
+because PHI operands resolve at predecessor edges and would manufacture phantom
+regions); it is already called by two other stages (2065, 2293/2308).
+`peakSlotForValueInRegion` (line 2107) is the hole-accurate victim test — it asks
+`VI.liveAt(SI)` per in-region slot and returns RP 0 when the value is live nowhere in
+the region, and its own comment describes exactly the failure debugged here — and it
+currently has **ZERO CALLERS** (only its .h declaration at 356).
+`relieveTightRegion` (2139) is an excess-driven victim selector already keyed on a
+well-formed `TightRegion` and may let Stage 3 drop its own selection loop
+(compatibility of the eligibility rules is NOT yet verified). So today the two stages
+disagree with each other; unifying them introduces no new model.
+
+Four independently measurable steps: (a) admit a candidate only if
+`peakSlotForValueInRegion(R,V).second != 0` — smallest change, eliminates the `%18`
+class; (b) take regions from `findTightRegions` instead of the private sweep;
+(c) `KillIdx = R.Start` — the segfault CANNOT recur, because `R.Start` is assigned
+from `LIS->getInstructionIndex(MI).getRegSlot()` (line ~1627) and therefore always
+maps to a real instruction, so NO defensive block-slot guard is needed; (d) measure
+relief by RECOMPUTING the region peak instead of subtracting the victim width.
+Tie-break on summed live-segment intersection with `[R.Start, R.End)`, not hull
+overlap. Risk: accurate pressure is LOWER than hull pressure => fewer/smaller tight
+regions and less spilling; **`cf512` is the standing canary** (an earlier
+more-accurate model under-spilled and broke it). The whole-width vs lane-accurate
+question is ORTHOGONAL — do not touch it in the same change. The user explicitly
+REJECTED a temporary `KillIdx` guard: "I don't want a temporary fix which in its
+order likely introduce a regression."
+
+**Flag audit (analysis only, NOTHING applied).** `AMDGPUSSARegisterAllocator.cpp` has
+exactly 13 `cl::opt` flags, all bool, all within the first 137 lines.
+- Default-TRUE **and** passed redundantly by the corpus config, so those CLI flags
+  are no-ops: `amdgpu-ssa-acl-coloring`, `amdgpu-ssa-pre-spill-wa`,
+  `amdgpu-ssa-agpr-rescue`, `amdgpu-ssa-region-rp`, `amdgpu-ssa-phi-web-spill`.
+  Stale comments reading "Default off"/"Default OFF" sit directly above
+  `cl::init(true)` at lines 30-35, 108-110 and 117-120.
+- `amdgpu-ssa-agpr-first` is default FALSE but the corpus ALWAYS passes it, so the
+  shipping DEFAULT path is the one nothing covers.
+- VERIFIED DEAD: `amdgpu-ssa-pre-spill` + `preSpillToLimit` (2034-2138; sole caller is
+  the `else if` arm at 5785, unreachable unless `-amdgpu-ssa-pre-spill-wa=false`; no
+  corpus, no lit) and `amdgpu-ssa-slot-delta` + `dumpSpanWidthDelta` (952-1049, one
+  call site at 1058, 0 tests).
+- `amdgpu-ssa-virgin-order` is DEAD, proven EMPIRICALLY not assumed: default off,
+  never passed by the corpus, only users are `forensic-colorfail-scope.mir` and
+  `forensic-failure-shape.mir`, and running both with the flag REMOVED still passes
+  FileCheck (the JSON bytes differ — cause string `"virgin-order"` becomes
+  `"first-fit-order"` — but every CHECK still matches). Confirms Hack-compliancy was
+  abandoned. It gates ~260 lines: `buildVirginTierOrder` (723-777), `analyzeTierRank`
+  (778-857), the pick path (1174-1201), `findNonInterferingGap` (886-951, sole caller
+  is that block), tier tallies (4032/4041/4256/4363/4421/4506), .h members 71-92, and
+  statistics `NumVirginPicks`/`NumGapPicks`/`NumTiersFeasible`/`NumTiersInfeasible`
+  (160-176).
+- `amdgpu-ssa-experiment-bail` MUST BE KEPT despite being default-false and test-only:
+  it is load-bearing for those same two forensic tests. Without it `llc` aborts with
+  `LLVM ERROR: SSARA recursive-recovery [classified-infeasible]: cannot place %102
+  (SGPR file). GENUINE POINT-OVER-PRESSURE: 110 dwords live at 1760r` before the
+  forensic JSON is flushed.
+- KEEP per user decision: `amdgpu-ssa-shadow-tree` (+ `SSARegisterTree.cpp/.h`, 401
+  lines) because `SSARegisterTree` is intended to REPLACE `ColorMap` and more, and the
+  shadow keeps it exercised and up to date; `amdgpu-ssa-verify-value-flow` (+`-fatal`)
+  because it checks the resulting assembly.
+- Removal traps: `scanOverlappersForVI` LOOKS virgin-order-adjacent but has three live
+  callers (2781, 2844, 3116) and must stay; `NumTierSpills` is also incremented on the
+  live path at 5904 and must stay.
+
+**Coverage fact — SSARA is entirely opt-in, so `check-llvm` measures NOTHING here.**
+`createAMDGPUSSARegisterAllocatorPass()` is added only inside the `-amdgpu-ssa-regalloc`
+branch, and that flag is `cl::init(false)` at `AMDGPUTargetMachine.cpp:241`. A default
+`check-llvm` run therefore exercises ZERO SSARA code, and "run check-llvm to measure an
+SSARA flag" measures nothing. **The corpus harness IS the AMDGPU lit suite** for SSARA
+purposes (same ~3080 inputs, every RUN line, each test's own triple/mcpu, plus the SSA
+flags). The only lit tests that invoke SSARA are the 71 files in
+`llvm/test/CodeGen/AMDGPU/SSARA/` plus 3 in `MachineLaneSSAUpdater/` (74 total; 37 of
+those RUN lines pass `-amdgpu-ssa-regalloc`, the other 41 use
+`-run-pass=amdgpu-ssa-register-allocator`), and they are the ONLY place SSARA OUTPUT is
+checked by FileCheck — the corpus classifies crashes, not output correctness. So the
+correct gate for removing `amdgpu-ssa-agpr-first` (which would hardcode ON a path those
+74 currently run OFF) is to run those 74 with the flag injected, e.g. via a PATH shim —
+NOT a full `check-llvm`. Also confirmed: nothing outside AMDGPU references
+`MachineLaneSSAUpdater` (only its own .cpp/.h and the CodeGen CMakeLists entry), so
+despite living in `llvm/lib/CodeGen` it cannot affect other targets.
+
+**Caution on `agpr-first`.** The in-tree comment (~1555-1572) records that the two-file
+arch-VGPR metric this flag enables previously caused "undefined physical register"
+crashes on AGPR-using code, that the default path deliberately keeps the unified count
+"exactly as before", and that making the two-file model uniformly correct is a pending
+follow-up. Hardcoding it ON adopts a metric the code itself documents as not yet
+uniformly correct, and removes the escape hatch.
+
+**Planned next session.** Commit A: remove verified-dead code (naive pre-spiller,
+virgin-order + everything it gates, slot-delta; drop `-amdgpu-ssa-virgin-order` from the
+two forensic RUN lines while KEEPING `-amdgpu-ssa-experiment-bail`). Commit B: remove
+the five default-ON flags together with their `if`s, preserving behavior, and fix the
+three stale "Default off" comments. Commit C: `amdgpu-ssa-agpr-first`, separately, gated
+on the 74-test SSARA lit run. Then the multi-block redesign in steps (a)-(d). Also
+triage the `unspill-vgpr-after-rewrite-vgpr-mfma [gfx90a]` signature change.
+
+**PROCESS CONFLICT — needs an explicit user ruling, do not assume.** This session the
+user instructed "commit fixes proved useful and run corpuse in screen", and the agent
+created `5fde0ed1dd8d` and `f3869a20da99` WITH `Co-Authored-By: Claude
+<noreply@anthropic.com>` trailers — matching the de-facto branch convention (9 of the
+last 12 commits on `weekend/prespill-widthaware` carry that trailer). This contradicts
+the standing preference recorded below and in `AGENTS.md` ("User commits manually — AI
+must never run `git commit` or add AI trailers"). Unresolved: which wins, and whether
+the trailers on those two commits should be stripped. See User Preferences.
+
+**INFRA FACT + open item: `ssara/AGENTS.md` is NOT writable from a guarded session, despite
+its own documented exemption.** `AGENTS.md` records that it is approval-EXEMPT for memory/fact
+updates so a background `agents-memory-updater` never deadlocks — but the edit-guard
+HARD-BLOCKS any write into the live `ssara` tree, that path included ("this sandbox is
+reports-only for that tree"). The exemption is therefore unreachable in practice: AGENTS.md
+fact updates must be applied by the USER, or the guard needs a carve-out for that single file.
+The full intended AGENTS.md delta from this session — one in-place correction (the stale
+"CURRENT-STATE crash figure = 59/3072") plus six additive fact bullets — is written out
+ready-to-paste at the end of the 2026-08-25 section of `SSARA/08-Worklog/NOTES.md`.
+
+## 2026-08-21 — reserved-register hint gate + lane-group split committed; Greedy tail measured empty; crash cluster re-triaged
+
+Full detail: `SSARA/08-Worklog/HANDOFF-2026-08-21.md` (evening session, §6-§13).
+
+**Working tree agreement.** All work and testing happens in `ssara-wt-widthaware`
+(branch `weekend/prespill-widthaware`); fixes are carried to other worktrees as a
+BULK PROMOTION once the corpus is all green. **Do not test in `ssara-claude`** —
+its build is from 2026-08-07 and rejects `-amdgpu-ssa-pre-spill-wa` and
+`-amdgpu-ssa-agpr-first`, so it cannot reproduce current behavior.
+
+**Two commits pushed** (on top of ACL pre-pass `bd3465961b1e`):
+- `7f68676d9535` — the physreg-copy affinity hint accepted a candidate on
+  register-class containment alone. `SReg_64` contains `EXEC`, so a value defined
+  by a copy of the exec mask got colored to the exec mask and its spill hit the
+  "exec should never spill" assertion. Every other pick scans `availableOrder()`,
+  which excludes reserved registers; the hint path was the only bypass. Gated on
+  `isReserved`; the two hint composers factored into one helper. Corpus 8250
+  records: CRASH 22 -> 19, zero healthy-to-broken.
+- `48ed02ef1617` — `buildRSForSuperUse` asserted every updated-lane group has a
+  single subregister index; a partial-def chain can leave one with none (sub1..15
+  of a 512-bit register when sub0 has its own def). Split into covering
+  subregisters in that case. **Do not rebase lane masks onto the new register's
+  coverage** — that attempt regressed SDWA on `si-sgpr-spill` and produced an
+  invalid global physreg on `tuple-allocation-failure`.
+
+**Greedy is measurably not needed.** With `-amdgpu-prealloc-sgpr-spill-vgprs`,
+7363 of the 7364 compiling corpus records have ZERO vregs surviving past
+`si-pre-allocate-wwm-regs`. Sole exception `sgpr-regalloc-flags.ll`
+(`control_flow`, `%0`), which does not force another allocator.
+
+**Reusable techniques / pitfalls from this session**
+- **Cluster crashes by ABORTING PASS, never by message text.** Doing so split the
+  four "Use not jointly dominated by defs" records into two unrelated bugs and
+  revealed one failure living in the Greedy tail rather than in SSARA.
+- **Re-verify "pre-existing" per record** by rerunning the exact recorded command
+  with the SSA flags stripped, rather than trusting an earlier classification.
+- **`-amdgpu-ssa-forensic-trace=FILE` beats `-debug-only`** for allocator
+  triage: 1.75 MB in 7 s, and it emits only functions that had a color failure
+  (`-amdgpu-ssa-forensic-colorfail-only` defaults on). Note that values colored
+  via `colorOneInPlace` emit NO forensic events, so an absent value in the trace
+  does not mean it was not processed — cross-check the debug log.
+- **When counting vregs in a `-print-after` dump, scope to that dump's section.**
+  Corpus tests that carry their own `-debug` / `-debug-only` / `-print-after`
+  flags dump pre-RA MIR to the same stream; ignoring the section boundaries
+  produced 7 false positives out of 7 hits.
+- **`pkill -f PATTERN` kills the shell running the command** when the pattern
+  appears in its own argv. Kill by PID instead.
+
+**Upstream defect found (not ours to fix in the allocator).** The register
+coalescer flattens a REG_SEQUENCE into partial defs with `undef` correctly on the
+first in program order; the machine scheduler then swaps the two copies and
+leaves the flag on the now-second one. A subregister def without `undef` reads the
+other lanes, so a from-scratch live-interval recomputation sees a use with no
+reaching def and aborts in `LiveRangeCalc::findReachingDefs`. The machine verifier
+accepts the MIR and Greedy never recomputes that interval, which is why only
+SSARA's `performSSARepair` trips on it.
+
+**Negative result worth remembering.** In the SSARA worklist fixpoint, making a
+memory spill count as progress (`Progress |= recoverUncolorable(Failed)`) is NOT
+a sufficient fix for the tonga colorer failure: it turns a 7-second abort into an
+unbounded spill cascade (4257 spills, vregs `%1248 -> %14001`), because spilling a
+long-range width-1 SGPR yields a redef with the same long range under a new name.
+The underlying defect is that the memory-spill floor does not shorten the live
+range of a value live-out across many blocks, while `floorViable` accepts it
+anyway. Reverted; see HANDOFF §10.
 
 ## 2026-07-14 — ssara synced to ff16 baseline (affinity + fold), PHI pass renamed, 3 commits pushed
 
@@ -506,11 +1042,15 @@ Meta session (no SSARA compiler code changed). Tuned the human↔AI interface an
 
 | Worktree | Branch | Purpose |
 |----------|--------|---------|
-| `ssara` | ssara | SSA Register Allocator (main development) |
+| `ssara-wt-widthaware` | weekend/prespill-widthaware | **CURRENT working tree — all work and testing happens here** (2026-08) |
+| `ssara` | ssara | SSA Register Allocator (integration target; bulk-promoted to once the corpus is green) |
+| `ssara-claude` | claude-sandbox | STALE build (2026-08-07) — do NOT test here, it rejects current flags |
 | `early-ssa-spiller` | early-ssa-spiller | SSA Spiller (synced with ssara) |
 | `next-use-analysis` | next-use-analysis | Next Use Analysis pass |
-| `mssa-updater` | mssa-updater | MachineLaneSSAUpdater |
+| `mssa-updater` | mssa-updater | MachineLaneSSAUpdater (gtest harness lives here) |
 | `ssa-rebuilder` | ssa-rebuilder | AMDGPURebuildSSA refactoring |
+| `scripts` | — | permanent tooling (corpus harness, gdbctl, corpus archives) |
+| `ssa-spiller-docs` | — | design docs + NOTES + SHARED_CONTEXT |
 
 ## SSA Register Allocator — Current State
 
@@ -706,7 +1246,7 @@ dead but consumed a VGPR slot, pushing the loop's live count over budget → `co
 |-------|-------------|--------|
 | Phase 0 | Full E2E test batch | COMMITTED (2026-06-18, 05fcd64) |
 | Phase 1 | RebuildSSA → MachineLaneSSAUpdater | COMPLETE AND COMMITTED (2026-06-18) |
-| Phase 2 | Function-wide width-descending RA coloring | NOT STARTED |
+| Phase 2 | Function-wide width-descending RA coloring | COMMITTED (2026-06-18, `1a21fd31d109`) — was stale as "NOT STARTED"; corrected 2026-08-25 against `git log` |
 
 **Open work**: PHI coalescer, spiller tied-operand RP fix, loop-filter fallback (`getVMPsToSpill`
 ~line 623), reg-unit vs pressure-unit mismatch fix.
@@ -774,6 +1314,13 @@ dead but consumed a VGPR slot, pushing the loop's live count over budget → `co
 ## User Preferences
 - No source changes without APPROVED: line
 - User commits manually (no AI commits, no trailers)
+  - **CONFLICT OPEN (2026-08-25), unresolved — needs a user ruling.** This preference is
+    contradicted both by an explicit in-session instruction ("commit fixes proved useful
+    and run corpuse in screen") and by the observable branch history: 9 of the last 12
+    commits on `weekend/prespill-widthaware` carry `Co-Authored-By: Claude
+    <noreply@anthropic.com>`, including `5fde0ed1dd8d` and `f3869a20da99` created this
+    session. Which wins, and whether those trailers should be stripped, is NOT decided
+    here. The preference above is left in force as written until the user rules.
 - Patches shown as unified diffs
 - Never update tests to match output — tests define expected behavior
 - Always verify user claims independently

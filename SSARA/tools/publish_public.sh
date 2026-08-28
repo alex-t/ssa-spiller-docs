@@ -32,10 +32,23 @@ set -euo pipefail
 # Configuration
 # -----------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PUBLIC_WORKTREE="$REPO_ROOT/../ssa-spiller-docs-public"
 PUBLIC_BRANCH="public"
 WORK_BRANCH="work"
+
+# Resolve REPO_ROOT to the worktree that actually has WORK_BRANCH checked out,
+# regardless of which copy of this script was invoked. The tools/ dir is rsync'd
+# into the public branch, so running that stale copy would otherwise point
+# REPO_ROOT at the public worktree and fail the branch check.
+work_root="$(git -C "$SCRIPT_DIR" worktree list --porcelain 2>/dev/null \
+    | awk -v b="refs/heads/$WORK_BRANCH" '
+        /^worktree /{wt=substr($0,10)}
+        $0=="branch "b{print wt; exit}')"
+if [[ -n "$work_root" ]]; then
+    REPO_ROOT="$work_root"
+else
+    REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+fi
+PUBLIC_WORKTREE="$REPO_ROOT/../ssa-spiller-docs-public"
 
 # Files/folders to include
 INCLUDE_PATHS=(
@@ -52,6 +65,8 @@ EXCLUDE_PATTERNS=(
     ".git"
     "*.tmp"
     ".DS_Store"
+    # Internal worklog — not for the public docs
+    "08-Worklog"
     # Exclude image files - they will be embedded as base64 during conversion
     "*.png"
     "*.jpg"
@@ -198,35 +213,48 @@ build_excludes() {
     echo "${excludes[@]}"
 }
 
-# Copy files to public worktree
+# Copy files to public worktree.
+#
+# Sources from `git archive HEAD` so ONLY committed content is published —
+# uncommitted or untracked files in the work tree never leak to the public repo.
+# EXCLUDE_PATTERNS are translated into git exclude pathspecs.
 copy_files() {
-    log "Copying files to public worktree..."
-    
+    log "Copying committed files (HEAD) to public worktree..."
+
     # Clear public worktree (except .git)
     find "$PUBLIC_WORKTREE" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-    
-    # Build exclude list
-    local exclude_args=()
+
+    # Translate exclude patterns into git pathspecs. A bare name (no glob char)
+    # is treated as a path segment to drop anywhere in the tree; a glob pattern
+    # is matched against the full path.
+    local pathspecs=()
     for pattern in "${EXCLUDE_PATTERNS[@]}"; do
-        exclude_args+=(--exclude="$pattern")
-    done
-    
-    # Copy each include path
-    for path in "${INCLUDE_PATHS[@]}"; do
-        if [[ -e "$REPO_ROOT/$path" ]]; then
-            if [[ -d "$REPO_ROOT/$path" ]]; then
-                # Directory - use rsync
-                mkdir -p "$PUBLIC_WORKTREE/$path"
-                rsync -a "${exclude_args[@]}" "$REPO_ROOT/$path/" "$PUBLIC_WORKTREE/$path/"
-            else
-                # File - direct copy
-                cp "$REPO_ROOT/$path" "$PUBLIC_WORKTREE/$path"
-            fi
-            log "  Copied: $path"
+        if [[ "$pattern" == *"*"* ]]; then
+            pathspecs+=(":(exclude,glob)**/$pattern")
         else
-            log "  Warning: $path not found, skipping"
+            pathspecs+=(":(exclude)**/$pattern" ":(exclude)**/$pattern/**")
         fi
     done
+
+    # Keep only include paths that are actually committed at HEAD.
+    local include_committed=()
+    for path in "${INCLUDE_PATHS[@]}"; do
+        if git -C "$REPO_ROOT" cat-file -e "HEAD:$path" 2>/dev/null; then
+            include_committed+=("$path")
+            log "  Including: $path"
+        else
+            log "  Warning: $path not committed at HEAD, skipping"
+        fi
+    done
+
+    if [[ ${#include_committed[@]} -eq 0 ]]; then
+        error "No committed include paths found at HEAD"
+    fi
+
+    # Stream the committed subset straight into the public worktree.
+    git -C "$REPO_ROOT" archive --format=tar HEAD -- \
+        "${include_committed[@]}" "${pathspecs[@]}" \
+        | tar -x -C "$PUBLIC_WORKTREE"
 }
 
 # Convert wikilinks in public worktree
@@ -248,54 +276,100 @@ convert_links() {
     log "Conversion report written to: $report_file"
 }
 
-# Commit and push changes
-commit_and_push() {
-    log "Committing changes to public branch..."
-    
-    cd "$PUBLIC_WORKTREE"
-    
-    # Stage all changes
-    git add -A
-    
-    # Check if there are changes to commit
-    if git diff --cached --quiet; then
-        log "No changes to commit"
+# Count local commits on PUBLIC_BRANCH not yet on origin/PUBLIC_BRANCH.
+# Echoes an integer (0 if the remote ref is unknown or fully in sync).
+unpushed_count() {
+    # Best-effort refresh of the remote-tracking ref so "ahead" is accurate.
+    git -C "$PUBLIC_WORKTREE" fetch --quiet origin "$PUBLIC_BRANCH" 2>/dev/null || true
+    if git -C "$PUBLIC_WORKTREE" rev-parse --verify --quiet \
+            "refs/remotes/origin/$PUBLIC_BRANCH" >/dev/null; then
+        git -C "$PUBLIC_WORKTREE" rev-list --count \
+            "origin/$PUBLIC_BRANCH..$PUBLIC_BRANCH"
+    else
+        # Remote branch doesn't exist yet: everything local is unpushed.
+        git -C "$PUBLIC_WORKTREE" rev-list --count "$PUBLIC_BRANCH"
+    fi
+}
+
+# Push PUBLIC_BRANCH to origin, tolerating failure so the caller can resume.
+# Returns 0 on success, non-zero on failure.
+push_public() {
+    if [[ "$NO_PUSH" == "true" ]]; then
+        log "Skipping push (--no-push specified)"
         return 0
     fi
-    
-    # Show what will be committed
+
+    local ahead
+    ahead="$(unpushed_count)"
+    if [[ "$ahead" -eq 0 ]]; then
+        log "origin/$PUBLIC_BRANCH is up to date; nothing to push"
+        return 0
+    fi
+
+    echo ""
+    log "$ahead local commit(s) not yet on origin/$PUBLIC_BRANCH:"
+    git -C "$PUBLIC_WORKTREE" log --oneline "origin/$PUBLIC_BRANCH..$PUBLIC_BRANCH" 2>/dev/null \
+        || git -C "$PUBLIC_WORKTREE" log --oneline -n "$ahead" "$PUBLIC_BRANCH"
+    echo ""
+
+    read -p "[publish] Push to origin/$PUBLIC_BRANCH? (y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log "Push skipped. Re-run this script (or push manually) to retry:"
+        log "  cd $PUBLIC_WORKTREE && git push origin $PUBLIC_BRANCH"
+        return 1
+    fi
+
+    # Retry loop: auth failures (mistyped password) are recoverable in place.
+    while true; do
+        log "Pushing to origin/$PUBLIC_BRANCH... (git may prompt for credentials)"
+        echo ""
+        if git -C "$PUBLIC_WORKTREE" push origin "$PUBLIC_BRANCH"; then
+            log "Push successful!"
+            return 0
+        fi
+        echo ""
+        log "Push failed (auth or network?). The commit is safe locally."
+        read -p "[publish] Retry push now? (y/N) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log "Push aborted. Re-run this script (or push manually) to retry:"
+            log "  cd $PUBLIC_WORKTREE && git push origin $PUBLIC_BRANCH"
+            return 1
+        fi
+    done
+}
+
+# Commit staged changes (if any), then push. Resumes cleanly when a prior run
+# already committed but its push failed: no new diff, but push_public still
+# detects the unpushed commit and offers to send it.
+commit_and_push() {
+    cd "$PUBLIC_WORKTREE"
+
+    # Stage all changes
+    git add -A
+
+    if git diff --cached --quiet; then
+        log "No new changes to commit"
+        # A prior run may have committed but failed to push — resume that.
+        if [[ "$(unpushed_count)" -gt 0 ]]; then
+            log "But local $PUBLIC_BRANCH is ahead of origin — resuming push."
+            push_public || true
+        fi
+        cd "$REPO_ROOT"
+        return 0
+    fi
+
     echo ""
     log "Changes to be committed:"
     git diff --cached --stat
     echo ""
-    
-    # Commit
+
     git commit -m "Publish docs (auto) - $TIMESTAMP"
     log "Committed successfully."
-    
-    if [[ "$NO_PUSH" == "true" ]]; then
-        log "Skipping push (--no-push specified)"
-    else
-        echo ""
-        read -p "[publish] Push to origin/$PUBLIC_BRANCH? (y/N) " -n 1 -r
-        echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log "Pushing to origin/$PUBLIC_BRANCH..."
-            log "(Git may prompt for credentials)"
-            echo ""
-            # Let git handle authentication interactively
-            if git push origin "$PUBLIC_BRANCH"; then
-                log "Push successful!"
-            else
-                log "Push failed. You can push manually later with:"
-                log "  cd $PUBLIC_WORKTREE && git push origin $PUBLIC_BRANCH"
-            fi
-        else
-            log "Push skipped. You can push manually later with:"
-            log "  cd $PUBLIC_WORKTREE && git push origin $PUBLIC_BRANCH"
-        fi
-    fi
-    
+
+    push_public || true
+
     cd "$REPO_ROOT"
 }
 

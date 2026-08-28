@@ -593,6 +593,98 @@ flowchart TD
 theory, and [[Architecture#Register files: SGPR, VGPR, AGPR]] for why an AGPR
 cycle must use a scratch AGPR.
 
+> ### ⚠️ Divergent-CF copy placement — latent hazard, currently avoided by exclusion (evidence-based status 2026-07-17)
+>
+> **Status corrected after empirical investigation.** An earlier revision of this
+> note called this an "active miscompile now." That overstated it. What the
+> evidence actually shows:
+>
+> **1. The known-dangerous class is mask/exec PHIs, and SSARA does NOT lower
+> them.** The bug this whole concern derives from (fixed in generic
+> `PHIElimination` by the AMDGPU `createPHISourceCopy`/`MovTermOpc` +
+> `createPHIDestinationCopy` hooks, D67101, 2019) is a **PHI whose value is an
+> exec-mask `sreg_64` tied to `SI_IF`/`SI_END_CF`** — see the regression test
+> `phi-elimination-end-cf.mir`. SSARA's `destroySSAAndRewrite` **early-returns**
+> when `hasCFPseudos(MF)` finds any `SI_IF`/`SI_ELSE`/`SI_IF_BREAK`/`SI_LOOP`/
+> `SI_END_CF` terminator (tracked `NumPhiFuncsSkippedCF`). So SSARA structurally
+> **excludes** exactly the mask-PHI class — it never destructs it. The hazard is
+> avoided by refusal, not by correct handling.
+>
+> **2. For the data PHIs SSARA DOES lower (post-`SILowerControlFlow`), no
+> miscompile was reproducible.** Four reproducers (divergent diamond, triangle,
+> 2-PHI swap, 3-PHI rotation) through the full SSA-RA stack all came out
+> **correct**: SSARA emits the non-taken/else-edge value copies in the dominator
+> under **wide exec**, and refines the taken-edge lanes under narrow exec — the
+> classic last-writer-wins pattern that is sound because the wide write covers all
+> join lanes. Coloring also coalesces most PHIs outright (no copy to misplace).
+> The claim that predecessor-terminator placement miscompiles *data* PHIs on
+> post-lowered CF is **unproven, and the observed behavior looks correct.**
+>
+> **The residual, honest concern (forward-looking):** if/when SSARA becomes the
+> **sole SSA-out converter** — i.e. stops skipping `hasCFPseudos` functions and
+> lowers mask/exec PHIs itself (once `SILowerControlFlow` etc. move to SSA) — it
+> **will** need the placement discipline below, because that is exactly the
+> mask-PHI class the generic hooks protect. Until then the bug is dormant behind
+> the `hasCFPseudos` gate.
+>
+> *(Original mechanism, kept for when the concern goes live:)* edge copies at the
+> **predecessor's terminator** run under a **narrower exec mask**; a copy there
+> writes the PHI temp for only that subset; the reconverged join reads lanes never
+> written → undefined. The wide-dominator-write pattern is what currently saves
+> the data-PHI case; a value that must reach reconverged lanes but is written
+> *only* under a narrow mask (the mask-PHI case) is not saved.
+>
+> This is exactly the hazard the generic AMDGPU `createPHIDestinationCopy` /
+> `createPHISourceCopy` hooks (`SIInstrInfo`, from D67101) exist to avoid — they
+> place the destination copy at the **top of the join block**, under the
+> reconverged mask, and route an `SI_ELSE`-tied source copy through `MovTermOpc`.
+>
+> **Fix — no target hook needed.** Because SSARA owns the whole SSA-out lowering,
+> the fix is a direct placement rule, not a `TargetInstrInfo` override: place the
+> PHI destination copy in the **JOIN block, immediately after EXEC is restored**,
+> i.e. right after the reconverge `$exec = S_OR_B64 $exec, <saved_exec>`
+> (EXEC = EXEC OR SAVED_EXEC), where all lanes are active again. Every lane the
+> destination read covers is then live, so the copy writes them all.
+>
+> **Reproduce:** a divergent diamond whose join PHI is **not** coalesced by
+> coloring (force a real edge copy / permutation), then confirm the copy lands at
+> the predecessor terminator (under masked exec) instead of after the join's
+> `S_OR_B64 $exec` reconverge.
+>
+> #### Design decision (2026-07-17): insertion point = `isBasicBlockPrologue` skip
+>
+> **Detection is not needed as a separate analysis — the insertion point *is* the
+> detector.** The correct place for a PHI value copy in a join is: start at the
+> join's top and skip while `TII->isBasicBlockPrologue(*I, DstPhys)` holds, then
+> insert. That predicate already flags the exec-transfer prologue
+> (`!MI.isTerminator() && Opcode != COPY && MI.modifiesRegister(EXEC)`), which
+> covers **both** `S_OR_B64 $exec` (full reconverge) and `S_OR_SAVEEXEC_B64`
+> (Flow-block partial restore) — verified on nested divergent MIR
+> (`stop-after=si-lower-control-flow`: every reconvergence block begins with one
+> of these, and both carry `implicit-def $exec`). It also encodes the
+> **SGPR-vs-VGPR** rule for free (its `IsNullOrVectorRegister` gate): a scalar
+> `DstPhys` may stay at BB top (scalar values are exec-independent), a vector
+> `DstPhys` is placed *after* the exec prologue. So a non-reconvergence join (no
+> exec prologue) yields "insert at top" = today's behavior; a reconvergence join
+> yields "insert after the restore" = the fix. One rule, both cases.
+>
+> **Why no dominance/region analysis.** The exec-restore is produced by
+> `SILowerControlFlow` when it lowers `SI_ELSE`/`SI_END_CF`, always at the
+> reconvergence block top — a structural invariant of the lowering SSARA runs
+> after, not a coincidence. The brute-force alternative (walk from the divergent
+> branch's immediate dominator, BFS to the join scanning for
+> `modifiesRegister(EXEC)`) is strictly more general but only adds coverage for
+> **hand-written, non-structurizer exec manipulation** (e.g. copy `$exec` to an
+> SGPR pair, apply logic, write back) that produces a wider read mask than the
+> predecessors' write masks *without* a recognizable restore. That is **out of
+> SSARA's contract** — no placement heuristic can divine it without full exec
+> dataflow, and such input never reaches us through the normal pipeline. Decision:
+> rely on `isBasicBlockPrologue`; do not build the region BFS.
+>
+> **Scope note:** source-side copies need no change — control flow is already
+> lowered long before SSARA, so there is no `SI_ELSE`-tied source copy to route
+> (the generic `createPHISourceCopy` `MovTermOpc` case cannot arise here).
+
 ---
 
 ## 11. Current Status and Future Work
@@ -616,6 +708,7 @@ cycle must use a scratch AGPR.
 | PHI coalescing — real recoloring (paper §4.3, Option A) | 🔧 Pending (durable fix for the above; 99.8% of residual copies feasible) — design: [[PHI_Coalescer]] |
 | Per-class / fragmentation-aware spilling | 🔧 Proposed ([[GCNUpwardRPTracker_PerClassRP]], [[Spiller_Redesign]]) |
 | Loop-filter fallback (`getVMPsToSpill`) | 🔧 Pending |
+| **Divergent-CF PHI-copy placement** (mask/exec-PHI hazard) | ⚠️ **Latent, avoided by exclusion** — SSARA skips `hasCFPseudos` functions, so the dangerous mask-PHI class is never destructed; data-PHI predecessor placement was NOT reproducibly wrong (4 reproducers correct; wide-dominator-write pattern is sound). Real fix (2-copy after exec-restore) needed only when SSARA becomes sole SSA-out converter over mask PHIs (§10) |
 
 Corpus health: **103 / 3060** AMDGPU LIT tests crash under the SSA chain (see
 [[CRASH_TRIAGE_REPORT_2026-07-10]]).

@@ -8,6 +8,18 @@ against the default Greedy allocator, and classifies the outcome.
 No source files are modified. Output goes under --out (default:
 <script_dir>/out/ssara-corpus/<timestamp>).
 
+TIMEOUT triage: a bare TIMEOUT says nothing, because it can mean "SSARA hangs"
+or "this test does not fit the budget under any allocator". So a timed-out SSARA
+leg is followed by Greedy at the SAME budget; if Greedy also exceeds it the
+budget is the story (timeout_class=both). If Greedy finishes, SSARA is re-run at
+--timeout-extend x the budget, which separates mere slowness (slow_ok) from a
+real hang, and — the case that matters — uncovers a CRASH that lands after the
+cutoff and was therefore recorded as a hang (late_crash). Verdicts live in the
+record and in report.md; the bucket stays TIMEOUT so run-to-run set diffs remain
+comparable. Budgets below ~300s put several large generated tests (the
+shufflevector.v2*.v8* family, amdgcn.bitcast.1024bit) right at the cutoff, where
+Greedy is over it too, so they add noise while hiding real failures.
+
 TODO(harness): the report dedups crash entries by .ll filename, which HIDES that
 a single test file with multiple RUN configs / multiple functions can have
 SEVERAL DISTINCT crashes (e.g. si-sgpr-spill.ll: fn `main` SGPR-perm-cycle vs fn
@@ -41,15 +53,16 @@ DEFAULT_CORPUS = Path(
     "/work/atimofee/sandbox/github/ssara/llvm/test/CodeGen/AMDGPU"
 )
 SSA_FLAG = "-amdgpu-ssa-regalloc"
-# SSARA extra flags appended after -amdgpu-ssa-regalloc. Default reproduces the
-# historical config; override wholesale with --ssa-extra on the CLI (no sed, no
-# edit/restore of this file). Set ONCE in cmd_run before the thread pool starts,
-# then read-only during the run -> thread-safe.
-SSA_EXTRA_FLAGS = [
-    "-amdgpu-ssa-acl-coloring",
-    "-amdgpu-ssa-agpr-rescue",
-    "-amdgpu-ssa-virgin-order",
-]
+# SSARA extra flags appended after -amdgpu-ssa-regalloc; override wholesale with
+# --ssa-extra on the CLI (no sed, no edit/restore of this file). Set ONCE in
+# cmd_run before the thread pool starts, then read-only during the run ->
+# thread-safe.
+#
+# EMPTY by default: the flags this used to carry (acl-coloring, agpr-rescue,
+# region-rp, pre-spill-wa, phi-web-spill, agpr-first, virgin-order) no longer
+# exist. Their behavior is now unconditional in the allocator, so passing any of
+# them makes llc exit with "Unknown command line argument" on EVERY test.
+SSA_EXTRA_FLAGS = []
 VERIFY_FLAG = "-verify-machineinstrs"
 
 # Run-mode globals (set once in cmd_run before the thread pool; read-only during
@@ -57,6 +70,10 @@ VERIFY_FLAG = "-verify-machineinstrs"
 CONFIG_MODE = "all"          # "all" (default) | "first" (one config per file)
 CAPTURE_CRASHES = False      # on crash, re-run with DEBUG_FLAGS + save big log
 DEBUG_FLAGS = ["-debug"]     # flags injected on the crash-capture re-run
+# Budget multiplier for the SSARA re-run that triages an SSARA-only TIMEOUT into
+# slow_ok / late_crash / hang. <=1 skips that re-run (verdict "not_probed"); the
+# Greedy comparison leg always runs, since it is what makes a TIMEOUT readable.
+TIMEOUT_EXTEND = 3
 # --forensic: inject -amdgpu-ssa-forensic-json=<per-tag path> into the SSARA run
 # so each (test,config) writes its own forensic NDJSON, and retain Greedy output
 # for colorfailing functions (incl. the crash path). OFF => byte-identical to the
@@ -68,6 +85,10 @@ FORENSIC_FLAG = "-amdgpu-ssa-forensic-json"
 FAILED_CMDS = []
 
 RUN_RE = re.compile(r"^\s*(?://|;|#|/\*)\s*RUN:\s*(.*?)\s*(?:\*/)?\s*$")
+# lit XFAIL directive, e.g. `; XFAIL: *` — upstream already expects this test to
+# fail, so neither leg says anything about SSARA.
+XFAIL_RE = re.compile(r"^\s*(?://|;|#|/\*)\s*XFAIL:")
+XFAIL_SCAN_LINES = 100
 DISQUALIFY = (
     "-run-pass", "-start-after", "-start-before",
     "-stop-after", "-stop-before", "-passes=",
@@ -111,6 +132,22 @@ def read_run_lines(path):
         lines.append(buf.strip())
         buf = ""
     return lines
+
+
+def has_xfail(path):
+    """True if the test carries a lit XFAIL directive. Scans the header only: lit
+    itself accepts a directive anywhere, but every XFAIL in this corpus is in the
+    first few comment lines, and the corpus holds files up to 12 MB."""
+    try:
+        with open(path, errors="replace") as f:
+            for n, line in enumerate(f):
+                if n >= XFAIL_SCAN_LINES:
+                    break
+                if XFAIL_RE.match(line):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def expand(tok, testpath, tmpbase):
@@ -420,6 +457,15 @@ def process(test, corpus, out, llc, timeout, verify):
     tmpbase = str(out / "tmp" / tag0)
     (out / "tmp").mkdir(parents=True, exist_ok=True)
 
+    # A lit XFAIL directive means upstream ALREADY expects this to fail, so both
+    # legs are meaningless: the SSARA leg lands in CRASH and the metric compare in
+    # REGRESSION_OCC_OR_SPILL, neither caused by SSARA. Detecting `not llc` in
+    # eligible_llc_cmd is not enough — an XFAIL file's RUN line is a plain `llc`
+    # (e.g. write-register-vgpr-into-sgpr.ll, nullptr-long-address-spaces.ll:
+    # `; XFAIL: *` + `; RUN: llc ...`).
+    if has_xfail(test):
+        return [{"test": rel, "bucket": "SKIP_EXPECTED_FAIL"}]
+
     # Collect all ELIGIBLE RUN lines (not just the first). Keep skip reasons only
     # if NONE is eligible, so a file with zero SSARA-eligible configs still emits
     # one SKIP record.
@@ -482,6 +528,44 @@ def process_one(rel, cfg, run, base_argv, inp, tag, out, llc, timeout, verify):
     rc, so, se, to = run_llc(sargv, timeout)
     if to:
         rec["bucket"] = "TIMEOUT"
+        rec["timeout_s"] = timeout
+        # A TIMEOUT measured on the SSARA leg alone is unreadable: it conflates
+        # "SSARA has a problem here" with "this test does not fit the budget
+        # under any allocator". Run Greedy at the SAME budget to tell them apart.
+        gargv = build_argv(llc, base_argv, inp, False, verify)
+        t0 = time.time()
+        grc, _, _, gto = run_llc(gargv, timeout)
+        rec["greedy_s"] = round(time.time() - t0, 1)
+        if gto:
+            # Greedy is over the budget too -> the budget is the story, not SSARA.
+            rec["timeout_class"] = "both"
+            return rec
+        rec["greedy_exit"] = grc
+        rec["timeout_class"] = "ssara-only"
+        if TIMEOUT_EXTEND <= 1:
+            rec["timeout_verdict"] = "not_probed"
+            return rec
+        # SSARA-specific, so it is worth paying for a longer look. This is the
+        # only way to see a crash that lands AFTER the cutoff, which would
+        # otherwise be filed as a hang forever.
+        ext = timeout * TIMEOUT_EXTEND
+        t0 = time.time()
+        src, _, sse, sto = run_llc(sargv, ext)
+        rec["ssara_extended_s"] = round(time.time() - t0, 1)
+        rec["extended_timeout_s"] = ext
+        if sto:
+            rec["timeout_verdict"] = "hang"
+        elif src != 0:
+            # Real failure that the cutoff was masking. Kept in the TIMEOUT
+            # bucket (so set diffs stay comparable) but flagged, signature
+            # recorded, and reported with a runnable command.
+            rec["timeout_verdict"] = "late_crash"
+            rec["crash_sig"] = crash_signature(sse)
+            rec["ssara_exit"] = src
+            rec["late_crash_cmd"] = cmdline
+            save(out / "stderr" / (tag + ".ssara.err"), sse)
+        else:
+            rec["timeout_verdict"] = "slow_ok"
         return rec
     if rc != 0:
         rec["bucket"] = "CRASH"
@@ -604,7 +688,7 @@ def rerun_failed(src, out, timeout, jobs):
 
 def cmd_run(args):
     global SSA_EXTRA_FLAGS, CONFIG_MODE, CAPTURE_CRASHES, DEBUG_FLAGS
-    global FORENSIC_ENABLED
+    global FORENSIC_ENABLED, TIMEOUT_EXTEND
     llc = Path(args.llc)
     if not llc.exists():
         sys.exit(f"llc not found: {llc}")
@@ -639,6 +723,7 @@ def cmd_run(args):
         DEBUG_FLAGS = shlex.split(dbg) if isinstance(dbg, str) else list(dbg)
     FORENSIC_ENABLED = bool(pick(True if args.forensic else None,
                                  "forensic", False))
+    TIMEOUT_EXTEND = int(pick(args.timeout_extend, "timeout_extend", 3))
 
     # Assemble the test list: CLI --tests / -f override the config file's tests.
     test_names = list(args.tests or [])
@@ -672,8 +757,12 @@ def cmd_run(args):
     # Provenance BEFORE the pool starts, so a run that dies half way still says
     # what it was. Folded into report.json by write_report().
     prov = _write_provenance(out, llc, corpus, tests, args)
+    # Name the TREE the revision came from: with a pinned /tmp binary the head
+    # falls back to the invoking cwd, so a bare "head=" can be read as the
+    # compiler's revision when it is actually whatever repo you launched from.
     print(f"[harness] llc={prov['llc']} sha={prov['llc_sha256'][:12]} "
-          f"head={prov['git_head'][:12]}{'+dirty' if prov['git_dirty'] else ''}",
+          f"head={prov['git_head'][:12]}{'+dirty' if prov['git_dirty'] else ''}"
+          f" (of {Path(prov['git_src']).name or '?'})",
           flush=True)
     results_path = out / "results.jsonl"
     lock = threading.Lock()
@@ -753,6 +842,7 @@ def _write_provenance(out, llc, corpus, tests, args):
         "n_tests": len(tests),
         "jobs": args.jobs,
         "timeout": args.timeout,
+        "timeout_extend": TIMEOUT_EXTEND,
         "git_src": git_src,
         "git_head": git_at(git_src, "rev-parse", "HEAD") if git_src else "",
         "git_dirty": bool(git_at(git_src, "status", "--porcelain")) if git_src
@@ -760,6 +850,54 @@ def _write_provenance(out, llc, corpus, tests, args):
     }
     (Path(out) / "run.json").write_text(json.dumps(prov, indent=2))
     return prov
+
+
+def _timeout_triage_lines(timeouts, label):
+    """Render the TIMEOUT verdicts. Every one of these records sits in the same
+    bucket, but they mean opposite things: 'both' is a budget artifact to ignore,
+    while 'late_crash' is a genuine failure the cutoff hid. Reported here because
+    a bare bucket count invites reading all timeouts as one population."""
+    if not timeouts:
+        return []
+    order = [
+        ("both", "Greedy over budget too -> NOT SSARA-specific, ignore"),
+        ("slow_ok", "SSARA-only, completes with a longer budget -> slow, not a failure"),
+        ("late_crash", "SSARA-only, CRASHES after the cutoff -> REAL FAILURE, hidden"),
+        ("hang", "SSARA-only, still running at the longer budget -> HANG"),
+        ("not_probed", "SSARA-only, extended re-run disabled (--timeout-extend<=1)"),
+    ]
+    def key(r):
+        return r.get("timeout_verdict") or r.get("timeout_class") or "unknown"
+    groups = {}
+    for r in timeouts:
+        groups.setdefault(key(r), []).append(r)
+    lines = ["## TIMEOUT triage", "",
+             f"{len(timeouts)} TIMEOUT records. A timeout is not a verdict on its "
+             "own; these are the measured outcomes.", ""]
+    for name, meaning in order:
+        rs = groups.pop(name, [])
+        if rs:
+            lines.append(f"- **{name}** ({len(rs)}): {meaning}")
+    for name, rs in sorted(groups.items()):
+        lines.append(f"- **{name}** ({len(rs)})")
+    lines.append("")
+    for name, _ in order:
+        rs = [r for r in timeouts if key(r) == name]
+        if not rs:
+            continue
+        lines += [f"### TIMEOUT/{name} ({len(rs)})", ""]
+        for r in sorted(rs, key=label):
+            t = f"budget {r.get('timeout_s','?')}s, greedy {r.get('greedy_s','?')}s"
+            if r.get("ssara_extended_s") is not None:
+                t += (f", ssara {r['ssara_extended_s']}s of "
+                      f"{r.get('extended_timeout_s','?')}s")
+            lines.append(f"- {label(r)} ({t})")
+            if r.get("crash_sig"):
+                lines.append(f"    - signature: {r['crash_sig']}")
+            if r.get("late_crash_cmd"):
+                lines.append(f"    - repro: {r['late_crash_cmd']}")
+        lines.append("")
+    return lines
 
 
 def write_report(out, n_examples=5):
@@ -788,6 +926,7 @@ def write_report(out, n_examples=5):
         for ex in sorted(crash[sig])[:n_examples]:
             lines.append(f"  - {ex}")
         lines.append("")
+    lines += _timeout_triage_lines(buckets.get("TIMEOUT", []), label)
     for b in ("REGRESSION_OCC_OR_SPILL", "MIXED", "DIFF_COALESCING",
               "OK_BETTER", "PREEXISTING_FAIL", "TIMEOUT", "HARNESS_ERROR",
               "NO_METRICS"):
@@ -881,6 +1020,54 @@ def _flag_mismatch(base, new, tol=0.02):
     return rows, (nA, binA), (nB, binB)
 
 
+def _budget_of(out):
+    p = Path(out) / "run.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text()).get("timeout")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _warn_budget_mismatch(base, new):
+    """Two runs with different --timeout are only partly comparable: a test can
+    move between TIMEOUT and OK/CRASH purely because the budget changed, which
+    then reads as a fix or a regression. Warn rather than exit, because the crash
+    accounting below is still meaningful for everything that did not time out."""
+    a, b = _budget_of(base), _budget_of(new)
+    if a is None or b is None or a == b:
+        return
+    print(f"*** TIMEOUT BUDGET DIFFERS: base {a}s vs new {b}s ***")
+    print("A test can cross the cutoff either way for that reason alone, so treat\n"
+          "TIMEOUT-related FIXED / REGRESSED entries below as unproven until\n"
+          "re-run at a common budget.\n")
+
+
+def _hidden_failures(out):
+    """(test, config) -> signature for TIMEOUT records that actually CRASH once
+    given a longer budget. These are real failures that a bucket count reads as
+    hangs, so the diff names them explicitly."""
+    m = {}
+    for l in (Path(out) / "results.jsonl").read_text().splitlines():
+        if not l.strip():
+            continue
+        r = json.loads(l)
+        if r.get("timeout_verdict") == "late_crash":
+            m[(r["test"], r.get("config", ""))] = r.get("crash_sig", "?")
+    return m
+
+
+def _report_hidden_failures(base, new):
+    for tag, d in (("base", _hidden_failures(base)), ("new", _hidden_failures(new))):
+        if d:
+            print(f"HIDDEN FAILURES in {tag} (TIMEOUT masking a crash) ({len(d)}):")
+            for k in sorted(d):
+                name = f"{k[0]} [{k[1]}]" if k[1] else k[0]
+                print(f"  - {name}   {d[k]}")
+            print()
+
+
 def cmd_diff(args):
     """Compare two run dirs by (test,config): FIXED (crashed in A, not in B),
     REGRESSED (crashes in B, not in A), SIG-CHANGED (crashes in both, different
@@ -900,6 +1087,8 @@ def cmd_diff(args):
         if not args.allow_flag_mismatch:
             sys.exit(2)
         print("\n--allow-flag-mismatch given: proceeding anyway.\n")
+    _warn_budget_mismatch(args.base, args.out)
+    _report_hidden_failures(args.base, args.out)
     A = _crash_map(args.base)
     B = _crash_map(args.out)
     ATimeout = _timeout_set(args.base)
@@ -962,7 +1151,15 @@ def main():
     r.add_argument("--out", default=str(default_out))
     r.add_argument("--llc", default=str(DEFAULT_LLC))
     r.add_argument("--jobs", type=int, default=max(1, ncpu // 2))
-    r.add_argument("--timeout", type=int, default=120)
+    r.add_argument("--timeout", type=int, default=120,
+                   help="Per-llc-invocation budget. 300 is the honest setting: "
+                        "below it several large generated tests sit at the "
+                        "cutoff with Greedy over it too.")
+    r.add_argument("--timeout-extend", type=int, default=None,
+                   help="On an SSARA-only TIMEOUT, re-run SSARA at this "
+                        "multiple of --timeout to separate slowness from a hang "
+                        "and to reveal a crash landing after the cutoff "
+                        "(default 3; <=1 disables the re-run).")
     r.add_argument("--limit", type=int, default=0)
     r.add_argument("--glob", default="")
     r.add_argument("--include-mir", action="store_true")
@@ -971,8 +1168,9 @@ def main():
     r.add_argument("--ssa-extra", default=None,
                    help="Override SSARA extra flags wholesale, e.g. "
                         "'-amdgpu-ssa-split-live-ranges'. Empty string = no "
-                        "extras. Default keeps acl-coloring+agpr-rescue+"
-                        "virgin-order.")
+                        "extras, which is also the default: the flags this used "
+                        "to pass were removed from the allocator and their "
+                        "behavior is now unconditional.")
     r.add_argument("--tests", nargs="+", default=None,
                    help="Explicit test list (paths relative to --corpus or "
                         "absolute). Uses each test's own RUN line for target/"
