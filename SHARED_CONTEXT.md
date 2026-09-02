@@ -1,7 +1,421 @@
 # Shared Context — SSA RA Project
 
 Cross-worktree knowledge base. Updated after significant sessions.
-Last updated: 2026-08-29
+Last updated: 2026-09-02
+
+## 2026-09-02 (evening) — READ THIS FIRST: current design docs moved to `04-Design/StandaloneRA/`
+
+**Design truth now lives in `SSARA/04-Design/StandaloneRA/` — nine documents. Anything left at the
+top level of `04-Design/` is STALE, including `Architecture.md` and `SSA_RA_Coloring.md`.** The move is
+deliberate: staleness is now in the PATH of every search hit, because a status block inside a file does
+not stop a topic grep from answering out of July material. Committed and pushed.
+
+Current set: `Lane_Accurate_Interference.md`, `RegisterTree_Driver_FSM.md`, `Recursive_Recovery_Fix.md`
+(authoritative over FSM §7), `SGPR_Spill_Lowering_In_SSARA.md`, `ssa_region_regalloc_design.md`,
+`Width_Tiered_Coloring.md`, `Spiller_GCNRPTarget_Redesign.md`, `Permutation_Scratch_Reserve.md`,
+`ACL_Pass_and_CallSite_Capacity.md`, plus the new
+`Demand_Oracle_And_Cumulative_Spill_Planning.md`.
+
+**Commit date is NOT an authority signal.** `SSA_RA_Coloring.md` and `ACL_Pass_and_CallSite_Capacity.md`
+were committed 2026-08-28 with content last edited 07-23. Read the file's own Status block.
+
+### New design decision — one demand oracle, cumulative spill planning
+
+Full text: `04-Design/StandaloneRA/Demand_Oracle_And_Cumulative_Spill_Planning.md`; session detail in
+NOTES §2026-09-02 (evening). User's two points:
+
+1. **No scalar RP metrics anywhere.** ONE register-demand oracle backed by the register tree: at a slot,
+   per (pool, width) tier in DESCENDING width order, Demand = values live needing that tier,
+   Capacity = starts from `RegClassInfo::getOrder(RC)` passing `isSpanFree`, Deficiency = shortfall in
+   RUNS. A dword count cannot express run structure or alignment, which are what decide colorability.
+2. **Cumulative (set) planning.** Relief is NOT additive — whether two evictions yield a usable run
+   depends on adjacency — so candidate selection must be over SETS with effect MEASURED by re-querying
+   the oracle, never credited per candidate. This is FSM §11 **O4** (atomic-spill insufficiency).
+
+`isSpanFree(first, w, [S,E))` is designed (`Lane_Accurate_Interference` §5) and exists in **NO code** —
+neither `SSARegisterTree` nor `SSARegisterTreeV2`. Prerequisite: the leaf axis must be **hardware
+register index**, not `getOrder` ordinal.
+
+**Odd widths are CLOSED (2026-08-29), by canonical decomposition into maximal aligned nodes.** Over
+leaves 0..3 a 3-wide run is `isFree(node 0..1) AND isFree(leaf 2)`, or
+`isFree(leaf 1) AND isFree(node 2..3)`. FSM §11 **O5 is STALE** — it still calls this open and needing
+composite nodes; that staleness caused the decision to be re-derived from scratch on 2026-09-02.
+
+### Corrections that change pending work
+
+- **Loop-carried liveness.** A value defined ANYWHERE in a loop, including the latch, is live across the
+  WHOLE loop, because the back edge carries it. Any forward-hull-over-slots model is wrong. The
+  `case3` removal in `costOfSpilling` is therefore **WITHDRAWN** until the demand model represents
+  back-edge liveness. The `test2-peruse` removal STANDS (it measured pre-existing pressure, not
+  pressure change, so it vetoed every candidate in exactly the regions needing one).
+- **Do not quote the relief-error figures** (pre-spill 34% of events, median 84 / max 144 dwords;
+  region-rp 20% / median 8). They compared summed `ExcessDrop` against a measured PEAK — different
+  quantities. `SpillPlan::NewPeak` vs measured peak is now printed at both stages; no data yet.
+- Gate order for spill/planner changes: the **83-command planner sweep** first
+  (`scripts/corpus/planner83/`, `scripts/ssara_trace.py`), then `cf512` as the under-spilling canary,
+  then corpus by bucket TRANSITION at `--timeout 300`. Never the lit suites.
+
+### Still open from the docs rescue
+
+`.gitignore` for the ~40 junk untracked entries that hid six design docs for a month; `AGENTS.md` still
+points at `Architecture.md` / `SSA_RA_Coloring.md` instead of `StandaloneRA/`, so the new folder does
+not yet reach a fresh session; the ACL doc's status line claims a default-off flag that was made
+default-on and then deleted by `05dc22aa5401`; FSM O5 needs marking closed.
+
+## 2026-09-01 (late) — THE PLAN for the next stages (user-set), plus three fixes applied
+
+Worktree `ssara-wt-widthaware`, branch `weekend/prespill-widthaware`, HEAD `0af845a0ed5a`. Detail:
+`SSARA/08-Worklog/NOTES.md` §2026-09-01 sections G/H/I/J and §K (the plan).
+
+### The four stages, in order
+
+1. **Corpus CRASH to 0.** "Make the LIT suite green" means the CORPUS HARNESS, not the SSARA lit files —
+   those were retired 2026-08-29 and are stale (see the standing entry below). The harness IS the AMDGPU
+   lit suite for SSARA purposes. Current baseline `runs/corpus-0901-refreeze` = **CRASH 9** of 8246
+   records over 3080 files. RISK: triage the 9 for design-impossibility FIRST, because a structurally
+   impossible one cannot be closed and would block every stage behind it.
+2. **Assembly correctness on every test**, delegated to a background agent. The harness classifies
+   CRASHES and compares `NumVgprs/TotalNumSgprs/ScratchSize/Occupancy`; it does NOT check that the
+   emitted code is right. Two levers already exist: the in-tree `-amdgpu-ssa-verify-value-flow`
+   (+`-fatal`), kept expressly because it checks the resulting assembly, and the harness's per-run
+   `asm/` directory, which makes a differential comparison against Greedy possible.
+3. **Classify all `REGRESSION_OCC_OR_SPILL`** (90 records in the baseline). Goal: prove nothing is
+   impossible BY DESIGN. Known structural candidates: no coalescing before allocation (PHI copies);
+   whole-tuple occupancy, so a dead lane is capacity Greedy keeps and SSARA does not (`reportLaneWaste`
+   measures exactly this); cross-call coloring, where a value live across a call may only take a
+   preserved register and one-shot greedy cannot pack them; spiller reload placement.
+4. **Cleanup, refactor, optimize — DIAGRAM FIRST.** Build the state diagram / workflow / call graph of
+   the whole allocation before touching anything; then cleanup driven by that; then switch to
+   `SSARegisterTree`. **The existing design docs are FAR OUTDATED** (user, 2026-09-01) — `Architecture.md`
+   and the `04-Design/` call graphs describe a pipeline the code no longer has, so the diagram must be
+   derived FROM THE CODE, and the docs are candidates for rewrite or deletion, never for citation.
+   The **dead-code cleanup of Stage 4 is ALREADY DONE** (last week) — see the correction entry below.
+   What remains queued for Stage 4: the Step 2 dedup of the two victim-selection loops, and
+   `reduceRegionPressure`'s private CFG-blind pressure model.
+
+### Applied this session — ALL COMMITTED AND PUSHED (verified by git, not memory)
+
+`git status` clean of source changes; HEAD `cafaab029cbe` == `origin/weekend/prespill-widthaware`
+(confirmed via `git ls-remote`). Only untracked scratch `.md` files remain in the tree. The two commits
+are `850168403fa4` (Reserve-WWM re-freeze) and `cafaab029cbe` (the allocator trio).
+DO NOT ASSUME UNCOMMITTED WORK — check `git status` and `git ls-remote` first.
+
+| # | change | why |
+|---|---|---|
+| 1 | `AMDGPUReserveWWMRegs`: `freezeReservedRegs()` after `clearNonWWMRegAllocMask()` | stale frozen reserved set; fixed 2 crashes + 5 occupancy regressions |
+| 2 | `relieveTightRegion` routed through `planSpill`, relief MEASURED not credited | tonga spilled ~400 values with the excess never moving (PHI-operand reload lands at the peak slot). TEMPORARY HALF-FIX — Step 2 dedup pending |
+| 3 | `wholeBlockDemand` + `allocStride` as the pre-spill gate metric | `pressureOf` is lane-accurate but `markOccupied` claims the whole tuple: tahiti read 50 of 96 where the colorer needed 98 |
+| 4 | live-through spill-blocker queues its evicted pieces | it erased the color + spilled (both committed) then returned NoOp, leaking an uncolored vreg to rewrite |
+
+All 8 reproducer configs compile with `-verify-machineinstrs`; canaries match or beat Greedy. Gate:
+`runs/corpus-0901-wholeblock` (pin sha `b7ab7ca7361d`) vs `runs/corpus-0901-refreeze`. Change 3 strictly
+raises region peaks, so it strictly increases spilling — watch `REGRESSION_OCC_OR_SPILL` transitions as
+closely as `CRASH`.
+
+**AI commits stay prohibited** (potentially-public workspace, ruling of 2026-08-25). The user runs them.
+
+### CORRECTION — the 2026-08-25 flag/dead-code inventory is OBSOLETE. Do not quote it.
+
+Every removal it proposed LANDED LAST WEEK. Verified today by grepping the tree, after the user had to
+correct an agent that recited the audit as if it were pending work:
+
+- `75b0ea42c988` removed the width-tier virgin allocation order (`buildVirginTierOrder`, `analyzeTierRank`,
+  `findNonInterferingGap`, the tier statistics).
+- `05dc22aa5401` dropped the five flags that were on by default (`acl-coloring`, `pre-spill-wa`,
+  `agpr-rescue`, `region-rp`, `phi-web-spill`).
+- `400183d0ab0d` dropped `agpr-first` and kept its behavior.
+- `pre-spill`/`preSpillToLimit` and `slot-delta`/`dumpSpanWidthDelta` are gone. NOTE the surviving
+  `preSpillToLimitWidthAware` is a DIFFERENT, LIVE function — do not confuse the names.
+
+`AMDGPUSSARegisterAllocator.cpp` now has exactly **6** `cl::opt`, NOT 13, and every one is
+`cl::init(false)` diagnostics: `experiment-bail`, `verify-value-flow`, `verify-value-flow-fatal`,
+`shadow-tree`, `lane-waste-dump`, `block-demand-dump` (the last is TEMPORARY measurement scaffolding for
+the whole-block metric and is the one thing still slated for deletion). Remaining matches for the old
+names are debug strings and `[Design: region-rp-reduction]` tags, not flags.
+
+**META-LESSON, the user's actual complaint:** the documentation mess is a direct consequence of reciting
+memory instead of reading the tree. `AGENTS.md` / `SHARED_CONTEXT.md` / `NOTES.md` entries older than a
+few days describe code that has since been deleted. Treat every inventory, flag list, line number, and
+"uncommitted state" claim in them as a LEAD ONLY; re-derive from `git log` + the source before stating it.
+
+## 2026-09-01 — corpus 0831 is a REGRESSION; all 7 new failures are ONE bug: a stale frozen reserved-register set
+
+Worktree `ssara-wt-widthaware`, branch `weekend/prespill-widthaware`, HEAD `0af845a0ed5a` (unchanged —
+nothing committed this session). Full detail: `SSARA/08-Worklog/NOTES.md` §2026-09-01. Design:
+`SSARA/04-Design/SGPR_Spill_Lowering_In_SSARA.md`.
+
+### Corpus `corpus-0831-phisimp-reserve` vs `archive-intervalfix-0829`
+
+`HARNESS_EXIT=0`, 2906 s, 8246 records / 3080 files. **NET crashes 11 -> 11, which nets 2 real fixes
+against 2 NEW crashes** — not a pass (`regression-baseline-is-truth`). Plus 5 new
+`REGRESSION_OCC_OR_SPILL` records and 8 improvements.
+
+| | test [config] | detail |
+| --- | --- | --- |
+| FIXED | `amdgcn.bitcast.1024bit.ll` [gfx1100], [gfx900] | compile now, but land in `REGRESSION_OCC_OR_SPILL` (below greedy) |
+| NEW CRASH | `preserve-wwm-copy-dst-reg.ll` [gfx908] | PEI `failed to find free scratch register` |
+| NEW CRASH | `schedule-amdgpu-tracker-physreg.ll` [tahiti] | `RegisterScavenging.h:81` in branch relaxation |
+| REGRESSED | `si-sgpr-spill.ll` [tonga] | `main` **+216 VGPRs / occupancy -5**; `main1` +200 / -3 |
+| REGRESSED | `schedule-amdgpu-trackers.ll` [gfx1100], [tonga] | +141 / -8 and +18 / -1 (trackers=1 configs) |
+| REGRESSED | `attr-amdgpu-num-sgpr.ll` [fiji], `insert_vector_dynelt.ll` [fiji] | +56 / -6 and +57 / -4 |
+
+### ROOT CAUSE — one bug, and it is pipeline state, NOT allocation quality
+
+SSARA's output is unchanged. `MachineRegisterInfo` holds reserved registers as a FROZEN snapshot.
+`SIRegisterInfo::getReservedRegs` :724 reserves every VGPR in `MFI->NonWWMRegMask`, which is the
+COMPLEMENT of a small top-of-file WWM window — so while set it reserves nearly the whole per-thread
+range. `AMDGPUReserveWWMRegs` :108 clears the mask but is `setPreservesAll()` and never re-freezes;
+the only later refresh was `createVGPRAllocPass(true)` via `RegAllocBase::init` :66, which
+`2296b3084604` skips under SSARA. So the WWM-era snapshot reaches PEI, `shiftWwmVGPRsToLowestRange`
+finds nothing `isAllocatable` and `break`s on iteration 1, the SGPR-spill lane holders stay parked at
+`v254/v255`, and `NumVgprs` (= highest index used) blows up. The scavenger reads the same snapshot,
+which is the two crashes. The parking is BY DESIGN — `determineRegsForWWMAllocation` says *"Try to use
+the highest available registers for now. Later after vgpr-regalloc, they can be shifted to the lowest
+range."* We removed the "after vgpr-regalloc" point.
+
+Proof without rebuilding: pre-PEI MIR **and** MachineFunctionInfo are identical between the two pins,
+yet `-run-pass=prologepilog` on that same MIR makes BOTH pins shift to `v38/v39`, and
+`-start-before=prologepilog` clears both crashes — because the MIR parser re-freezes
+(`MIRParser.cpp` :663). **Reusable:** identical serialized MIR + different output => the difference is
+non-serialized in-memory state; `-run-pass`/`-start-before` isolates it in one step, no bisect.
+
+### Upstream order (confirmed) and the architectural consequence
+
+`addRegAssignAndRewriteOptimized` :1714-1776 = SGPR RA -> ... -> `SILowerSGPRSpills` ->
+`SIPreAllocateWWMRegs` -> WWM RA -> `AMDGPUReserveWWMRegs` -> **VGPR RA last** (same shape in the fast
+path). That last position is load-bearing three times: only remaining re-freeze; the documented
+"after vgpr-regalloc" point for the holder shift-down; and it allocates per-thread VGPRs AROUND the
+reserved WWM window. SSARA sits in the SGPR slot but colours VGPRs there too, i.e. before holders or
+the WWM window exist — which is what `VGPRReserve` compensates for by PREDICTING holder demand.
+`availableOrder` withholds the reserve from the numeric-HIGH tail while the shift-back wants a LOW
+register just above the coloured range: coupled by count only, never identity, so the prediction is
+unverifiable.
+
+### Decisions
+
+1. Interim workaround now (re-freeze in `AMDGPUReserveWWMRegs`), **not** the pipeline fix — the RA code
+   is still being cleaned up (`reduceRegionPressure` rewrite is step 1) and a re-plumb would land in
+   moving code.
+2. Full design parked in `04-Design/SGPR_Spill_Lowering_In_SSARA.md`, BACKLOG row marked GATED ON THE
+   RA CODE CLEANUP: SSARA picks the holder physregs itself and `SILowerSGPRSpills` uses the PHYSICAL
+   lane path for all spills (the path callee-saved spills already use for CFI reasons), deleting the
+   window, the mask, WWM allocation for holders, and the shift-back.
+3. `bitcast.1024bit` signatures moved: **tahiti** -> `GENUINE POINT-OVER-PRESSURE at 13056r` (the
+   width shortage from 08-31, gate still pending); **tonga** -> `FEASIBLE YET UNRECOVERED at 4288r`,
+   i.e. a RECOVERY bug and a different class. That resolves the 08-31 "tonga untriaged" question.
+4. User presentation preference: **no option lists / multiple-choice** in replies, ever. Prose only.
+
+## 2026-08-31 (night) — 3 fixes committed; tahiti `bitcast.1024bit` is a WIDTH shortage; width-aware gate PROPOSED
+
+Worktree `ssara-wt-widthaware`, branch `weekend/prespill-widthaware`, HEAD `0af845a0ed5a`.
+Full detail: `SSARA/08-Worklog/NOTES.md` §2026-08-31.
+
+### Committed and pushed
+
+| commit | what |
+| --- | --- |
+| `2296b3084604` | `createVGPRAllocPass(true)` guarded by `!EnableSSARegAlloc`. On the SSARA path it enqueued ZERO values and made ZERO assignments (measured) — SSARA colors both files. WWM allocation stays greedy on both paths. |
+| `26de7e397c6e` | VGPR reserve now also counts callee-saved SGPR spill lanes. `SILowerSGPRSpills` takes those holders with `findUnusedRegister` BEFORE the whole-wave reservation is computed, straight out of the reserve. Fixed 5 functions failing `cannot find enough VGPRs for wwm-regalloc` on `bitcast.1024bit [gfx900]`. |
+| `0af845a0ed5a` | PHI simplifier: single-real fold compares the (register, sub-register) PAIR; `IMPLICIT_DEF` with only undef-flagged reads is erased; undef-flagging sub-flag removed. 32 folds + 96 erasures on the reproducer. |
+
+`bitcast.1024bit`: both `gfx1100` configs and `gfx900` now compile. `tahiti` and `tonga` still fail.
+
+### Status of `amdgcn.bitcast.1024bit.ll` per config
+
+| gfx900 | tonga | gfx1100 x2 | tahiti |
+| --- | --- | --- | --- |
+| ok | CRASH (own signature, untriaged) | ok | CRASH (root-caused, fix proposed) |
+
+### `tahiti` root cause — ALIGNED-PAIR saturation, not dword over-pressure
+
+**Correction to a stale model:** the colorer has been LANE-ACCURATE since `0e7bbc24fdcc`
+(`pickFreePhysReg`'s `claimsUnit` tests per-unit subranges). Proof it works: 23 ODD SGPRs are accepted
+for 32-bit values in the failing function. Do NOT say "the colorer charges whole tuples".
+
+`SReg_64_XEXEC`'s order has exactly 48 entries (47 even-aligned pairs + `VCC`; SGPR 64-bit is stride-2).
+48 simultaneously live crossers — each a `%N:sreg_64 = S_LSHR_B64 ..., 24` whose ONLY use is
+`PHI %N.sub0`, so `sub1` is dead at its own def — each hold the LOW half of a distinct pair. All 48
+candidates are rejected `occupied-unit` while 48 odd registers sit free and are structurally unusable
+for a 64-bit value. Lane-accuracy cannot help a value of the SAME width as the hole.
+
+`findTightRegions` cannot see it: its gate is lane-accurate dwords (`GCNRegPressure::inc` charges
+`getNumCoveredRegs`), reading 50 of 96, so ZERO regions are opened and `reduceRegionPressure` returns
+before its own debug line — even though 48 zero-weight live-through candidates had been enumerated.
+`-amdgpu-ssa-lane-waste-dump`: `tahiti pool=96 peakWhole=98 laneAtPeak=50 maxWaste=48` versus
+`tonga pool=88 peakWhole=146 laneAtPeak=130` — the same function COMPILES on tonga because its
+lane-accurate peak is already over the smaller pool. `tahiti` fails exactly where `lane <= limit < whole`.
+
+`reportPointOverPressure` MISLABELS this class: it sums whole class widths, so it claims
+`GENUINE POINT-OVER-PRESSURE: 98 > 96 ... no coloring-time recovery can fit them` when the lane-accurate
+demand is 50 of 96 and spilling one crosser would fix it. Diagnostic-only fix, own commit.
+
+### Width-aware tight-region gate — PROPOSED, awaiting approval
+
+The predicate ALREADY EXISTS: `relieveTightRegion`'s `overSubscribed(W)` = `live(W) > floor(Limit/W)`
+(RA `:1833-1837`) fires here at 49 > 48, but is only a victim-ORDERING key; the region-entry gate and the
+stop condition are both total-dword, so it is never even computed. Proposal: compute it per slot in
+`findTightRegions` and OR it into the gate; seed `relieveTightRegion`'s excess from it.
+
+**Soundness (decides the design):** one width at a time is SOUND. The whole-width dword SUM is NOT —
+48 dead-high pairs plus 48 32-bit values sum to 144 dwords and still fit, and this function does exactly
+that. So keep the dword total lane-accurate and ADD the width test beside it. Group by WIDTH not by
+register class (coarser but strictly stronger: all width-2 SGPR classes draw pairs from one file).
+`floor(Limit/W)` overstates capacity when stride > W, which errs toward MISSING, never a false trigger.
+
+**RISK:** strictly ADDS regions, so it spills MORE. `cf512` broke on UNDER-spilling, so the exposure is
+the opposite direction — watch `REGRESSION_OCC_OR_SPILL` as closely as `CRASH`.
+
+### Corpus run in flight at session end
+
+`screen -S corpus0831`, out `scripts/corpus/runs/corpus-0831-phisimp-reserve` (persistent, not `/tmp`),
+pinned `/tmp/ssara-pin-0831/llc` sha `78224533ce6b`, `--configs all --jobs 32 --timeout 300`. Baseline
+`scripts/corpus/archive-intervalfix-0829`.
+
+**HARNESS DEFECT:** `run.json`'s `git_head` records the head of `git_src` = **the DOCS repo**, not the
+compiler tree, so no archive carries a compiler commit and archive identity is `llc_sha256` alone.
+**PROCESS:** always `ninja -C build/user-debug llc` immediately before pinning a corpus binary — the
+build was stale at this session's end.
+
+## 2026-08-29 (evening) — migrated-def interval fix + identity-copy elimination; corpus gates A only; `bitcast.1024bit` STILL REGRESSED (OPEN)
+
+Worktree `ssara-wt-widthaware`, branch `weekend/prespill-widthaware`, session baseline HEAD
+`0e7bbc24fdcc`; all of the below was UNCOMMITTED during the session. **Committed AFTERWARDS by the
+user as `bc355db5e45a`** (`[AMDGPU] SSA RA: region pressure, migrated-def intervals, identity copies`,
+alex-t, 21:58 UTC) — verified against `git log`, not assumed. `git diff 0e7bbc24fdcc HEAD` = +448/−305
+over `MachineLaneSSAUpdater.{h,cpp}`, `AMDGPURebuildSSA.cpp`, `SSASpillEmitter.cpp`,
+`AMDGPUSSARegisterAllocator.{h,cpp}`. That commit ALSO carries region-pressure work not described here,
+so do NOT read it as containing only A and B.
+
+### A. Live-interval malformation in SSA repair — the orphaned zero-length segment
+
+Root cause of the `amdgcn.bitcast.512bit.ll` coloring failure. When `repairSSAForNewDef` retargets a def
+operand to a fresh vreg, `shrinkToUses` trims segments but KEEPS THE DEAD DEF, leaving an ORPHANED
+ZERO-LENGTH SEGMENT `[SlotN, SlotNd)` in the original vreg's main range and subranges. Six reload redefs
+(`%1039`-`%1054`) each kept one, and each orphan still claimed `VGPR0_VGPR1` in the interference test —
+**76 phantom live dwords**, which is what blocked the reload.
+
+Fix, two parts: (1) `performSSARepair` gained a `SlotIndex MigratedDef` parameter and removes that value
+from each affected subrange via `S.removeValNo(VNI)` BEFORE `shrinkToUses`; (2) new public
+`rebuildMainRangeFromSubranges(OrigVReg)` clears the main range and calls
+`LIS.constructMainRangeFromSubranges`, invoked ONCE PER VREG by the drivers — `AMDGPURebuildSSA` after
+`finalizeCoupledUses`, `SSASpillEmitter` after the reload-repair loop.
+
+**CAVEAT (unresolved).** The comment this fix replaced explicitly warned that
+`constructMainRangeFromSubranges` aborts with `Use not jointly dominated by defs` when lanes are split
+across vregs. The fix moves that call to DRIVER level (after all renames) on the ASSUMPTION that it is
+then safe. That assumption is NOT yet fully validated — see the OPEN REGRESSION below.
+
+### B. Identity copies were ENDEMIC, and erasing them fixed real crashes
+
+Applied under `APPROVED: erase identity copies in the allocator`. New `eliminateIdentityCopies(MF)`
+called from `rewriteStage` after `eliminateRegSequences`, plus `STATISTIC NumIdentityCopiesErased`. It
+erases a `COPY` whose source and destination resolve to the same physical register, via the established
+idiom (`RemoveMachineInstrFromMaps` guarded by `Indexes->hasIndex`, then `eraseFromParent`). Guards:
+skip a `COPY` with >2 operands, skip virtual operands (another stage's file), assert physical operands
+carry no subreg index, skip an UNDEF SOURCE (that copy is what makes the register appear defined).
+
+**Scale: 167 identity copies across 33 of the 34 SSARA pipeline `.ll` tests**, including
+`pipeline-linear.ll`, which spills nothing. Dominant source = kernel-argument live-in copies, an input
+`%0 = COPY $sgpr4_sgpr5` colored straight back onto `$sgpr4_sgpr5` — the classic missing-coalescer
+artifact; SSARA has no coalescer and Greedy never shows it because `RegisterCoalescer` runs first. Never
+EMITTING one was already the convention in three places (`lowerPHIs` `SrcPhys == DstPhys`;
+`eliminateRegSequences` `Src != Expected` / `S != D`; `resolvePermutation` `S != D` per dword); the gap
+was only copies PREDATING the pass. After: 167 -> 0.
+
+**KEY INSIGHT — NOT cosmetic.** `$vgpr0 = COPY $vgpr0` is both a def AND a USE, and the phantom use
+fails the post-RA check `Use of $vgpr0 does not have a corresponding definition on every path`, aborting
+with `LLVM ERROR: Use not jointly dominated by defs`. Erasing it FIXED two crashing configs of
+`amdgcn.bitcast.1024bit.ll` (`gfx900`, `tonga`).
+
+Verification: ZERO test transitions across all 121 tests in SSARA + SSASpiller + MachineLaneSSAUpdater
+(102 pass / 19 fail, identical set on both binaries); the five live-allocator `.mir` failures produce
+BYTE-IDENTICAL MIR either way; `amdgcn.bitcast.512bit.ll` passes all 5 configs on both binaries;
+`-amdgpu-ssa-verify-value-flow` reports 0 violations across the SSARA `.ll` tests; no new clang-tidy
+lints.
+
+### C. Corpus run gates change A ONLY — CRASH 13 records/12 files -> 12 records/7 files
+
+`harness_rescue.py` run against the FROZEN PRE-IDENTITY-COPY binary `/tmp/ssara-pin-0829/llc`, so it
+gates A and NOT B. 3080 files, 8246 records, `--configs all --jobs 32 --timeout 300`, 2825s wall, in a
+detached `screen` session `corpus0829`. **ARCHIVED** out of `/tmp` to
+`scripts/corpus/archive-intervalfix-0829/` (19 MB: `results.jsonl`, `run.json`, `report.md`,
+`failed.txt`, `harness.log`) — that is the baseline the NEXT corpus run must be diffed against. Note
+`scripts/` is itself a git repo, so the archive is only durable once committed there. The pin
+`/tmp/ssara-pin-0829/llc` was NOT archived (1.8 GB, rebuildable).
+
+Versus `archive-rescuebound-0828`: CRASH **13 records over 12 files -> 12 records over 7 files**; off
+the crash axis 22 keys better, 3 worse (`GlobalISel/llvm.amdgcn.wmma_64.ll` [gfx1100+gisel]
+`DIFF_COALESCING -> REGRESSION_OCC_OR_SPILL`; `bf16.ll` on two configs `MIXED ->
+REGRESSION_OCC_OR_SPILL`). Confirmed crash fixes: **3 only** — `identical-subrange-spill-infloop.ll`
+[gfx900] (`CRASH -> MIXED`, the null-`KillMI` segfault), `indirect-addressing-si-gfx9.ll` [gfx900],
+`rewrite-vgpr-mfma-to-agpr.ll` [gfx942]. This supersedes the "8 remaining crashes (INFERRED)" note in
+the section below.
+
+**METHOD WARNINGS.** Two apparent EXTRA fixes are not fixes — `nullptr-long-address-spaces.ll` and
+`write-register-vgpr-into-sgpr.ll` [bonaire], plus four `vgpr-spill-emergency-stack-slot-compute.ll`
+configs, bucket `SKIP_EXPECTED_FAIL` in the new run and are therefore NOT COMPARED AT ALL. And keying a
+bucket diff by `(test, config)` **COLLIDES** when one file has two configs sharing an mcpu name —
+`amdgcn.bitcast.1024bit.ll` has two `gfx1100` RUN lines differing only by `-mattr` real-true16 — which
+silently undercounts. Compare per-key bucket LISTS, never a single value per key. (This is the same
+multiset trap recorded for the 0828 run, now confirmed on a second axis.)
+
+**HARNESS: `SSA_EXTRA_FLAGS` is EMPTY.** The six `-amdgpu-ssa-*` extra flags were removed from the
+allocator and their behavior is unconditional, so passing them makes `llc` fail with `Unknown command
+line argument`. The harness injects ONLY `-amdgpu-ssa-regalloc` and `-verify-machineinstrs`.
+
+### OPEN REGRESSION — `amdgcn.bitcast.1024bit.ll`, NOT at baseline
+
+| state | gfx900 | tonga | gfx1100 x2 | tahiti |
+| --- | --- | --- | --- | --- |
+| baseline `archive-rescuebound-0828` | REGRESSION_OCC_OR_SPILL | REGRESSION_OCC_OR_SPILL | REGRESSION_OCC_OR_SPILL | CRASH (joint domination) |
+| change A alone | CRASH | CRASH | CRASH | CRASH |
+| A + B | ok | ok | **CRASH** | CRASH (signature MOVED) |
+
+Both `gfx1100` configs abort with `SSARA recursive-recovery [worklist-drained]: cannot place %2555 or
+%2556 (SGPR file). FEASIBLE YET UNRECOVERED (allocator bug): peak 105 live dwords at 4480r <= 105
+registers, so a placement exists but recovery did not find it` — **two configs remain REGRESSED vs
+baseline.** `tahiti` still crashes with a MOVED signature, from joint domination to `GENUINE
+POINT-OVER-PRESSURE: 98 dwords live at 1510`: not a new regression (it crashed before) but not fixed.
+Per `regression-baseline-is-truth` this work is **NOT at baseline and stays OPEN.**
+
+**NEXT STEP — ATTRIBUTION, proposed but NOT approved and NOT run.** Temporarily revert the four
+change-A files (their diff contains ONLY change A, verified), rebuild, re-run the `gfx1100` config, and
+establish whether change A owns the recovery abort.
+
+**READ FIRST — prior art.** This `bitcast.1024bit` failure was already triaged and queued in an earlier
+session (NOTES near lines 3551 / 3637 / 3687), which attributes the `wwm-regalloc` + `Use not jointly
+dominated by defs` abort to **the WWM Greedy allocator**, not to SSA reconstruction. That matches change
+B clearing `gfx900` and `tonga`: the phantom use inside a self-copy is what failed the
+every-path-definition check. So the joint-domination half is most likely a PRE-EXISTING WWM sensitivity
+the identity copies were feeding. The surviving `gfx1100` abort has a DIFFERENT signature (SSARA
+recursive recovery reporting a feasible placement it did not find) — treat it as a separate question.
+
+### Reusable facts
+
+**The abandoned spiller pass is PROVABLY out of the pipeline.**
+`createAMDGPUSSARegisterSpillerPass` is defined at `AMDGPUSSARegisterSpiller.cpp:1416` and declared at
+`AMDGPU.h:103` but has NO CALL SITE anywhere in `llvm`. The live pipeline at
+`AMDGPUTargetMachine.cpp:1720-1736` is `RebuildSSA`, `PHISimplifier`, `SSARegisterAllocator`,
+`VerifyPhysRegLiveness`. So `narrowSpilledRemnants` and its only callee `narrowRemnantToNewReg`
+(`SSASpillEmitter`) are reachable ONLY via `-run-pass=amdgpu-ssa-register-spiller` and cannot affect
+shipped output. By contrast `splitLiveRangeAt` IS live — `AMDGPUSSARegisterAllocator.cpp:2569` and
+`:2815`. (This corrects the "RebuildSSA -> SSA Spiller -> SSA RA" description in *Pipeline Integration*
+below, which has been updated.)
+
+**Anatomy of the 19 baseline lit failures** in SSARA + SSASpiller + MachineLaneSSAUpdater — useful for
+triage even though these suites are NOT a gate: 10 exercise the abandoned
+`amdgpu-ssa-register-spiller` pass (7 via `-run-pass`, 3 via `-stop-after`; includes the 1 legitimate
+XFAIL) and DISAPPEAR when that pass is deleted; 4 are the known unregistered
+`test-machine-lane-ssa-updater` harness pass; 5 are genuine live-allocator `.mir` failures PRE-DATING
+this session (`destruct-chain`, `destruct-sgpr64-swap`, `destruct-sgpr96-swap`, `destruct-wide-swap`,
+`lowerphi-critical-edge-split`).
+
+**Baseline-comparison technique.** `lit` resolves tools from the BUILD DIRECTORY, so comparing a frozen
+binary against a fresh build requires replaying each test's RUN lines directly with the tool paths
+substituted. Throwaway runner at `/tmp/runtest.py` (joins backslash-continued RUN lines, substitutes
+`%s` and `%t`, rewrites the `llc` and `FileCheck` tokens, runs under `bash` with `pipefail`). VALIDATE
+any such runner by confirming it reports PASS for tests that pass under `lit` — cf. the 2026-08-28/29
+process lesson, where an unvalidated replay script produced a fake regression panic.
 
 ## 2026-08-28/29 — SSARA lit suites RETIRED as a gate; lane-accurate interference probe; 16-bit swap fallback
 
@@ -51,6 +465,112 @@ reclassifications, proven twice over: `nullptr-long-address-spaces.ll` and
 `-amdgpu-ssa-regalloc` removed (`Size <= 8 && "Invalid size"` in `MCAsmStreamer::emitValueImpl`;
 `illegal copy from vector register to SGPR`). The newer harness buckets them `SKIP_EXPECTED_FAIL`; the
 archived 0828 baseline predates that detection. TRAP when diffing against any older archive.
+
+### GUARDING SCHEME FOR THE REGISTER TREE — SETTLED
+
+Recorded in [[Lane_Accurate_Interference]] §7/§10. Reference oracle = `recomputeOccupancy(V)`, which is
+the per-unit probe ALREADY in `pickFreePhysReg`, lifted into a named function; contract is DERIVES
+EVERYTHING, CACHES NOTHING, so it is correct by construction and has no staleness surface. Compare the
+BITVECTOR OF UNAVAILABLE UNITS over V's range (the legality predicate), never the chosen register
+(choice = AGPR preference + phi-affinity hints, orthogonal). Directional severity: tree-free while
+reference-occupied is a MISCOMPILE and must be zero; tree-occupied while reference-free is lost capacity
+only, a harness-bucketed warning. The reference SURVIVES the flip under `EXPENSIVE_CHECKS`. Tree
+augmentation (per-unit `(Start,End)` arrays, arbitrary-start and non-power-of-two span queries) comes
+BEFORE guarding.
+
+`LiveIntervalUnion` REJECTED: throwaway complexity, staleness is an unenforced convention with no
+assert and no `MachineVerifier` coverage, snapshots hold `const LiveInterval *` that
+`removeInterval` + `createAndComputeVirtRegInterval` can dangle, and `LiveRegMatrix` is built around
+eviction, which this allocator never does.
+
+"Zero diff vs existing" is the WRONG criterion: the current shadow is FED BY `OccupiedRegUnits`
+(`shadowResetToOccupied` re-derives it), so it is a photocopy that catches only copying bugs; its
+comparator asks "did the allocator pick the LOWEST free leaf" while the real order is AGPR-preference
+then affinity hints then first-fit, so it can never read zero; it is gated on `Reporter->active()` and
+scoped to VGPR_32 width-1 with wide tuples mirrored as independent width-1 leaves; and the incumbent
+whole-tuple model IS the defect, so faithfully reproducing it reproduces over-claiming.
+
+Structural blocker: `SSARegisterTree` models ALIGNED POWER-OF-TWO blocks with POINT queries.
+`FeatureRequiresAlignedVGPRs` has only 3 use sites in `AMDGPU.td`, so most targets allow a `VReg_64` at
+an odd VGPR, and `VReg_96` is width 3. Keep candidate enumeration in `RegClassInfo::getOrder(RC)` and
+use the tree purely as the `isFree` oracle.
+
+### Design SETTLED (2026-08-29): guarding scheme + candidate order
+
+**Guard.** Reference = `recomputeOccupancy(V)`, i.e. the per-unit probe ALREADY in `pickFreePhysReg`,
+lifted into a named function. Contract: DERIVES EVERYTHING, CACHES NOTHING — correct by construction, no
+staleness surface, too slow to ship, definitionally the right answer. Compare the BITVECTOR OF
+UNAVAILABLE UNITS over V's range (the legality predicate), NOT the chosen register (choice = AGPR
+preference + phi-affinity hints, orthogonal). Directional severity: tree-free/reference-occupied =
+MISCOMPILE, hard error, must be zero; tree-occupied/reference-free = lost capacity, harness-bucketed
+warning. The reference SURVIVES the flip under `EXPENSIVE_CHECKS`, because shadowing only observes states
+the incumbent's decision sequence reaches. `LiveIntervalUnion` REJECTED (throwaway complexity; staleness
+discipline is an unenforced convention with no assert and no `MachineVerifier` coverage; snapshots hold
+`const LiveInterval *` so interval recompute can dangle them; `LiveRegMatrix` is shaped around eviction,
+which this allocator never does). "Zero diff vs the existing code" is the WRONG criterion: the current
+shadow is FED BY `OccupiedRegUnits` so it is a photocopy that only catches copying bugs, its comparator
+tests "did the allocator pick the LOWEST free leaf" which affinity hints falsify by design, it is gated
+on `Reporter->active()` so normal corpus runs never exercise it, and above all the incumbent whole-tuple
+model IS the defect — a diff against it is WANTED.
+
+**Candidate order.** Enumerate from `RegClassInfo::getOrder(RC)`; the tree answers ONLY
+`isSpanFree(first, w, [S,E))`. Unaligned starts and non-power-of-two widths are handled by the CANONICAL
+SEGMENT-TREE RANGE DECOMPOSITION (at most two maximal aligned nodes per level, ANDed): the width-3 run
+`[1,4)` is `isFree(leaf 1) AND isFree(node 2..3)`. No phase arrays, no sparse table, no extra storage. So
+`pickFreeAligned` never needs generalising. A LEVEL SCAN cannot serve as `getNextFree` — not for speed
+(the heap layout does make a level contiguous, and the `MaxFreeAligned` descent is already $O(\log N)$ vs
+$O(N/2^k)$) but for COMPLETENESS: with leaf 0 occupied, 1-2 free, 3 occupied, a level-1 scan reports no
+width-2 block though `v[1:2]` is free and legal; level $k$ holds only $2^k$-aligned blocks and odd widths
+have no level. Failure mode is pessimism → needless spills/colorfails. It does earn a place as a cheap
+ADMISSION FILTER (`FreeLeaves >= 3` before verifying 3 leaves for a stride-4 width-3 SGPR). TRAPS:
+`isSpanFree` must read free-extent aggregates only, never `NodeAllocated`; and THE LEAF AXIS MUST BE
+HARDWARE REGISTER INDEX, not `getOrder` ordinal, since allocation order is not HW order on targets that
+reserve registers.
+
+### NEXT SESSION STARTS HERE (user decision, 2026-08-29 01:15) — `reduceRegionPressure` hull model
+
+Function boundaries matter; an agent MISATTRIBUTED them mid-session, crediting the good machinery to the
+wrong function. Actual layout: `peakSlotForValueInRegion` :1680, `relieveTightRegion` :1711,
+`preSpillToLimitWidthAware` :1813, `reduceRegionPressure` :1896.
+
+- `preSpillToLimitWidthAware` (PRE-color) is CORRECT and is the template: regions from
+  `findTightRegions` (:1865, :1880), hole-accurate admission `LIS->getInterval(V).liveAt(R.PeakSlot)`
+  (:1733), relief via `relieveTightRegion` (:1885), spill kill-at-def + reload-at-use (:1804-1805).
+- `reduceRegionPressure` (POST-color recovery, LIVE, called :5382 in the round loop) is UNTOUCHED and
+  still has the private `Iv{S,E,W,VReg,Colored}` with the HULL at :1932
+  (`{LI.beginIndex(), LI.endIndex()}`, so liveness holes cease to exist), its own event-list sweep
+  :1947-1983 on ONE GLOBAL SLOT AXIS with no CFG awareness (sums mutually exclusive divergent paths; a
+  "region" can span blocks), and its own private `Region` struct :1954. Call-site comment :5374 admits
+  it: "Kept as-is only to unblock corpus measurement of the AGPR/dead-def work."
+- Mostly DELETION + REWIRING, not new machinery. `peakSlotForValueInRegion` has ZERO call sites (its job
+  is done by the inline `liveAt(R.PeakSlot)`) — wire it in or delete it. Relief is CREDITED not measured
+  (`Excess -= C.W`, :1795/:1807); defensible under kill-at-def plus the reload-placement filter (:2047),
+  but an assumption.
+
+**RISK FLAG (unverified, measure before touching the accounting).** Whole-width accounting is deliberate
+and :1942-1946 states its premise: "the colorer reserves whole aligned tuples and does NOT reclaim dead
+high-lanes ... Lane-accurate pressure here under-spilled and broke cf512." Today's lane-accurate
+interference change makes the colorer RECLAIM dead lanes — we invalidated exactly that premise. So
+whole-width pressure here may now OVER-estimate against the new colorer and OVER-spill, the opposite of
+the original cf512 failure. Re-check `cf512` under the new colorer FIRST; it is the canary both ways.
+
+### Prerequisites either way, and the remaining crash set
+
+1. `getCachedRegUnit` -> `getRegUnit` at :727 (correctness; gates the guard, since the reference oracle
+   must be right before it can judge the tree).
+2. `scanOverlappersForVI` :636-661 still ORs in EVERY unit of a colored tuple regardless of live lanes
+   (:658-659) — same over-claiming defect in the other consumer (gap pick + splitter).
+3. No corpus run since the 16-bit swap fix, so "8 remaining crashes" is INFERRED, not measured.
+
+Remaining classes (from `/tmp/corpus-laneexact2/report.md` minus the fixed gfx1100 bitcast): 2x
+`UNREACHABLE` in the allocator (`indirect-addressing-si-gfx9` [gfx900], `schedule-xdl-resource` [gfx908]);
+2x incorrect register class (`rewrite-vgpr-mfma-to-agpr` [gfx942],
+`unspill-vgpr-after-rewrite-vgpr-mfma` [gfx90a], probably ONE root cause); `non-undef virtual register not
+colored` (`debug-value`); `Use not jointly dominated by defs` (`amdgcn.bitcast.1024bit` [tahiti],
+pre-existing); `cannot find enough VGPRs for wwm-regalloc` (`scc-clobbered-sgpr-to-vmem-spill` [gfx900]);
+self-diagnosed GENUINE SGPR point-over-pressure (`spill-scavenge-offset` [verde]). NONE is an
+occupancy-pessimism colorfail — the interference work already extracted its crash value, which is why the
+RegisterTree is now REFACTORING, not correctness.
 
 ### Still open
 
@@ -1098,13 +1618,24 @@ Meta session (no SSARA compiler code changed). Tuned the human↔AI interface an
   (64-bit SGPR, one writelane lane). Autogenerated tests regenerated.
 - 61 PASS + 3 XFAIL across RA+Spiller suites (spill-loop-skip-def-inside.mir
   and spill-loop-reload-inside-fallback.mir XFAIL; one balanced-use-before XFAIL)
+  — HISTORICAL. These suites are NOT a gate (user ruling 2026-08-29). Current state for
+  triage only, measured 2026-08-29: 121 tests over SSARA + SSASpiller + MachineLaneSSAUpdater,
+  102 pass / 19 fail, of which 10 exercise the abandoned standalone spiller pass, 4 are the
+  unregistered `test-machine-lane-ssa-updater` harness pass, and 5 are genuine live-allocator
+  `.mir` failures pre-dating 2026-08-29.
 - End-to-end RA pipeline fully functional (coloring → SSA destruction → operand rewrite)
 - RebuildSSA pass ported and registered (9 fixes applied)
 
 ### Pipeline Integration (COMPLETE, 2026-06-11)
 - AMDGPURebuildSSA ported from PR #156049 into ssara worktree (9 bug fixes applied)
 - `-amdgpu-ssa-regalloc` flag wired in `addRegAssignAndRewriteOptimized()`;
-  replaces entire greedy SGPR/WWM/VGPR chain with: RebuildSSA → SSA Spiller → SSA RA
+  replaces entire greedy SGPR/WWM/VGPR chain. **The pipeline as originally wired was
+  RebuildSSA → SSA Spiller → SSA RA; that is STALE.** Verified 2026-08-29 against the source:
+  the live pipeline at `AMDGPUTargetMachine.cpp:1720-1736` is RebuildSSA → PHISimplifier →
+  SSARegisterAllocator → VerifyPhysRegLiveness. `createAMDGPUSSARegisterSpillerPass` is still
+  defined (`AMDGPUSSARegisterSpiller.cpp:1416`) and declared (`AMDGPU.h:103`) but has NO CALL SITE
+  anywhere in `llvm` — the standalone spiller pass is ABANDONED and reachable only via
+  `-run-pass=amdgpu-ssa-register-spiller`. Spilling now happens inside the allocator.
 - Pre-RA sequence unchanged (PHIElim + TwoAddress + RegCoalescer + RenameIndependentSubregs)
 - RebuildSSA is temporary bridge: converts post-PHIElim non-SSA MIR back to SSA
 - Three post-RA property fixes in AMDGPUSSARegisterAllocator (we skip VirtRegRewriter):
@@ -1123,8 +1654,11 @@ Meta session (no SSARA compiler code changed). Tuned the human↔AI interface an
 - VGPR spill lowering: `SIRegisterInfo::eliminateFrameIndex` handles `SI_SPILL_V*_SAVE/RESTORE`
   via PEI; requires physical regs (SSA RA delivers) + `ScratchRSrcReg` reserved by
   `SIFrameLowering` prologue. Mechanism identified; E2E smoke tests are the proof.
-- Full pipeline flag (`-amdgpu-ssa-regalloc`) wire-up and `.ll` smoke tests
-- PHI coalescer (paper section 4.3)
+- ~~Full pipeline flag (`-amdgpu-ssa-regalloc`) wire-up and `.ll` smoke tests~~ — STALE, this
+  contradicted the "Pipeline Integration (COMPLETE, 2026-06-11)" section above; struck 2026-08-29
+- PHI coalescer (paper section 4.3) — still absent, and 2026-08-29 measured its cost directly:
+  167 identity copies across 33 of 34 SSARA pipeline `.ll` tests, dominated by kernel-argument
+  live-in copies that Greedy never shows because `RegisterCoalescer` runs first
 - Spiller tied-operand RP fix
 
 ## Key Design Decisions
@@ -1314,13 +1848,13 @@ dead but consumed a VGPR slot, pushing the loop's live count over budget → `co
 ## User Preferences
 - No source changes without APPROVED: line
 - User commits manually (no AI commits, no trailers)
-  - **CONFLICT OPEN (2026-08-25), unresolved — needs a user ruling.** This preference is
-    contradicted both by an explicit in-session instruction ("commit fixes proved useful
-    and run corpuse in screen") and by the observable branch history: 9 of the last 12
-    commits on `weekend/prespill-widthaware` carry `Co-Authored-By: Claude
-    <noreply@anthropic.com>`, including `5fde0ed1dd8d` and `f3869a20da99` created this
-    session. Which wins, and whether those trailers should be stripped, is NOT decided
-    here. The preference above is left in force as written until the user rules.
+  - **CONFLICT RESOLVED (user ruling, 2026-08-25/26) — was left marked OPEN here until
+    2026-08-29.** AI commits are PROHIBITED because this workspace is potentially public;
+    the preference stands from 2026-08-25 onwards and the agent prepares and stages only.
+    The pre-existing `Co-Authored-By: Claude` trailers on `weekend/prespill-widthaware`
+    (including `5fde0ed1dd8d` and `f3869a20da99`) need no stripping, because the branch will
+    be SQUASHED to a single commit before porting to the public tree. Confirmed in practice
+    on 2026-08-29: `bc355db5e45a` was created by the user, not the agent.
 - Patches shown as unified diffs
 - Never update tests to match output — tests define expected behavior
 - Always verify user claims independently
