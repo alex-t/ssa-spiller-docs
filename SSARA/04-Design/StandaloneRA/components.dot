@@ -1,0 +1,171 @@
+digraph arch {
+  compound=true; rankdir=LR; newrank=true; ranksep=1.0; nodesep=0.25;
+  node [shape=box style="filled,rounded" fontname="Helvetica" fontsize=10];
+  edge [color="#666666"];
+  subgraph cluster_0 {
+    label="pipeline  (separate passes)"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#555555"; penwidth=3; fontcolor="#555555"; fontname="Helvetica-Bold"; fontsize=13;
+    "AMDGPURebuildSSA" [style="filled,rounded,dashed" fillcolor="#ffffff" color="#555555" label=<<b>AMDGPURebuildSSA</b><br/><font point-size="8">restore SSA before allocation<br/>separate pass, not traced</font>>];
+    "AMDGPUPHISimplifier" [style="filled,rounded,dashed" fillcolor="#ffffff" color="#555555" label=<<b>AMDGPUPHISimplifier</b><br/><font point-size="8">flag undef PHI operands, fold single-real PHIs, erase dead IMPLICIT_DEFs<br/>separate pass, not traced</font>>];
+    "AMDGPUVerifyPhysRegLiveness" [style="filled,rounded,dashed" fillcolor="#ffffff" color="#555555" label=<<b>AMDGPUVerifyPhysRegLiveness</b><br/><font point-size="8">post-RA physreg liveness check (off by default)<br/>separate pass, not traced</font>>];
+  }
+  subgraph cluster_1 {
+    label="0  entry / setup"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#7f7f7f"; penwidth=3; fontcolor="#7f7f7f"; fontname="Helvetica-Bold"; fontsize=13;
+    "runOnMachineFunction" [fillcolor="#e8e8e8" color="#7f7f7f" label=<<b>runOnMachineFunction</b><br/><font point-size="8">pass entry; owns the SGPR then VGPR stages<br/>7375 runs / 99.4%</font>>];
+    "hasCFPseudos" [fillcolor="#e8e8e8" color="#7f7f7f" label=<<b>hasCFPseudos</b><br/><font point-size="8">reject unlowered SI control flow<br/>7375 runs / 99.4%</font>>];
+    "widenToAVOnUnified" [fillcolor="#e8e8e8" color="#7f7f7f" label=<<b>widenToAVOnUnified</b><br/><font point-size="8">VGPR to AV widening on unified files<br/>7375 runs / 99.4%</font>>];
+    "classifyVRegs" [fillcolor="#e8e8e8" color="#7f7f7f" label=<<b>classifyVRegs</b><br/><font point-size="8">bucket vregs by file and width<br/>7375 runs / 99.4%</font>>];
+  }
+  subgraph cluster_2 {
+    label="1  pre-spiller"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#1f77b4"; penwidth=3; fontcolor="#1f77b4"; fontname="Helvetica-Bold"; fontsize=13;
+    "preSpillToLimitWidthAware" [fillcolor="#cfe8ff" color="#1f77b4" label=<<b>preSpillToLimitWidthAware</b><br/><font point-size="8">reduce demand before coloring<br/>7375 runs / 99.4%</font>>];
+    "findTightRegions" [fillcolor="#cfe8ff" color="#1f77b4" label=<<b>findTightRegions</b><br/><font point-size="8">per-block regions where demand exceeds limit<br/>7375 runs / 99.4%</font>>];
+    "relieveTightRegion" [fillcolor="#cfe8ff" color="#1f77b4" label=<<b>relieveTightRegion</b><br/><font point-size="8">pick victims for one region<br/>109 runs / 1.5%</font>>];
+    "measureRegionPeak" [fillcolor="#cfe8ff" color="#1f77b4" label=<<b>measureRegionPeak</b><br/><font point-size="8">peak, per-slot profile, occupants<br/>109 runs / 1.5%</font>>];
+    "wholeBlockDemand" [fillcolor="#cfe8ff" color="#1f77b4" label=<<b>wholeBlockDemand</b><br/><font point-size="8">width-aware demand incl. alignment waste<br/>7374 runs / 99.4%</font>>];
+    "planSpill" [fillcolor="#cfe8ff" color="#1f77b4" label=<<b>planSpill</b><br/><font point-size="8">spill kind and predicted relief<br/>106 runs / 1.4%</font>>];
+    "costOfSpilling" [fillcolor="#cfe8ff" color="#1f77b4" label=<<b>costOfSpilling</b><br/><font point-size="8">reload feasibility and traffic cost<br/>103 runs / 1.4%</font>>];
+    "predictSpill" [style="filled,rounded,dashed" fillcolor="#ffffff" color="#999999" fontcolor="#999999" label=<<b>predictSpill</b><br/><font point-size="8">per-slot relief before any store is emitted<br/>NEVER RUNS</font>>];
+  }
+  subgraph cluster_3 {
+    label="2  across-call livers (inside color)"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#d62728"; penwidth=3; fontcolor="#d62728"; fontname="Helvetica-Bold"; fontsize=13;
+    "preassignValuesLiveAcrossCalls" [fillcolor="#ffe0e0" color="#d62728" label=<<b>preassignValuesLiveAcrossCalls</b><br/><font point-size="8">pin call-crossers to callee-saved first<br/>7375 runs / 99.4%</font>>];
+  }
+  subgraph cluster_4 {
+    label="3  PHI hints (per value, inside the walk)"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#9467bd"; penwidth=3; fontcolor="#9467bd"; fontname="Helvetica-Bold"; fontsize=13;
+    "collectPhiHints" [fillcolor="#efe0ff" color="#9467bd" label=<<b>collectPhiHints</b><br/><font point-size="8">affinity hints from PHI webs<br/>7040 runs / 94.9%</font>>];
+  }
+  subgraph cluster_5 {
+    label="4  colorer"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#2ca02c"; penwidth=3; fontcolor="#2ca02c"; fontname="Helvetica-Bold"; fontsize=13;
+    "color" [fillcolor="#d8f5d0" color="#2ca02c" label=<<b>color</b><br/><font point-size="8">width-descending walk in dominance order<br/>7375 runs / 99.4%</font>>];
+    "seedOccupiedAtBBEntry" [fillcolor="#d8f5d0" color="#2ca02c" label=<<b>seedOccupiedAtBBEntry</b><br/><font point-size="8">live-in occupancy at block entry<br/>7040 runs / 94.9%</font>>];
+    "pickFreePhysReg" [fillcolor="#d8f5d0" color="#2ca02c" label=<<b>pickFreePhysReg</b><br/><font point-size="8">smallest free, hint-biased<br/>7040 runs / 94.9%</font>>];
+    "availableOrder" [fillcolor="#d8f5d0" color="#2ca02c" label=<<b>availableOrder</b><br/><font point-size="8">candidate physreg order<br/>7375 runs / 99.4%</font>>];
+    "allocatablePool" [fillcolor="#d8f5d0" color="#2ca02c" label=<<b>allocatablePool</b><br/><font point-size="8">pool size = count of 32-bit regs in the file<br/>7375 runs / 99.4%</font>>];
+    "survivesClobberSites" [fillcolor="#d8f5d0" color="#2ca02c" label=<<b>survivesClobberSites</b><br/><font point-size="8">reject call and asm clobbered choices<br/>7040 runs / 94.9%</font>>];
+    "markOccupied" [fillcolor="#d8f5d0" color="#2ca02c" label=<<b>markOccupied</b><br/><font point-size="8">claim reg units<br/>7040 runs / 94.9%</font>>];
+    "commitColor" [fillcolor="#d8f5d0" color="#2ca02c" label=<<b>commitColor</b><br/><font point-size="8">record a color (split path only)<br/>216 runs / 2.9%</font>>];
+  }
+  subgraph cluster_6 {
+    label="5  region-rp rounds  (2nd spill layer + full recolor)"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#ff7f0e"; penwidth=3; fontcolor="#ff7f0e"; fontname="Helvetica-Bold"; fontsize=13;
+    "reduceRegionPressure" [fillcolor="#ffeeba" color="#ff7f0e" label=<<b>reduceRegionPressure</b><br/><font point-size="8">spill across tight regions<br/>61 runs / 0.8%</font>>];
+    "colorOneInPlace" [fillcolor="#ffeeba" color="#ff7f0e" label=<<b>colorOneInPlace</b><br/><font point-size="8">color one value against a frozen ColorMap<br/>47 runs / 0.6%</font>>];
+  }
+  subgraph cluster_7 {
+    label="6  recovery worklist  (per failed value)"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#e377c2"; penwidth=3; fontcolor="#e377c2"; fontname="Helvetica-Bold"; fontsize=13;
+    "recoverUncolorable" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>recoverUncolorable</b><br/><font point-size="8">resolve one uncolorable value<br/>50 runs / 0.7%</font>>];
+    "classifyRecovery" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>classifyRecovery</b><br/><font point-size="8">choose a recovery action<br/>50 runs / 0.7%</font>>];
+    "collectRecoveryWindow" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>collectRecoveryWindow</b><br/><font point-size="8">window and crossers around the failure<br/>50 runs / 0.7%</font>>];
+    "trySelfSplitColor" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>trySelfSplitColor</b><br/><font point-size="8">split the value's own range<br/>24 runs / 0.3%</font>>];
+    "spillBlocker" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>spillBlocker</b><br/><font point-size="8">spill a live-through blocking it<br/>25 runs / 0.3%</font>>];
+    "closePhiWeb" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>closePhiWeb</b><br/><font point-size="8">close the PHI equivalence class<br/>106 runs / 1.4%</font>>];
+    "webReloadFeasible" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>webReloadFeasible</b><br/><font point-size="8">can the whole web be reloaded<br/>28 runs / 0.4%</font>>];
+    "tryAGPRHomeRescue" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>tryAGPRHomeRescue</b><br/><font point-size="8">home in AGPRs with a-to-v copies<br/>41 runs / 0.6%</font>>];
+    "reportPointOverPressure" [fillcolor="#ffd9cf" color="#e377c2" label=<<b>reportPointOverPressure</b><br/><font point-size="8">TERMINAL: give up<br/>8 runs / 0.1%</font>>];
+    "emitRecoveryWindow" [style="filled,rounded,dashed" fillcolor="#ffffff" color="#999999" fontcolor="#999999" label=<<b>emitRecoveryWindow</b><br/><font point-size="8">forensic window dump<br/>NEVER RUNS</font>>];
+  }
+  subgraph cluster_8 {
+    label="7  spill emitter  (service for 1, 5 and 6)"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#8c564b"; penwidth=3; fontcolor="#8c564b"; fontname="Helvetica-Bold"; fontsize=13;
+    "spillOneVMP" [fillcolor="#f3e6ff" color="#8c564b" label=<<b>spillOneVMP</b><br/><font point-size="8">store at def, reload at uses<br/>113 runs / 1.5%</font>>];
+    "spillPhiWeb" [fillcolor="#f3e6ff" color="#8c564b" label=<<b>spillPhiWeb</b><br/><font point-size="8">spill an entire PHI web<br/>27 runs / 0.4%</font>>];
+    "spillAtDefinition" [fillcolor="#f3e6ff" color="#8c564b" label=<<b>spillAtDefinition</b><br/><font point-size="8">place the store<br/>113 runs / 1.5%</font>>];
+    "buildDomGroupsForSpill" [fillcolor="#f3e6ff" color="#8c564b" label=<<b>buildDomGroupsForSpill</b><br/><font point-size="8">group uses by dominating reload<br/>119 runs / 1.6%</font>>];
+    "emitReloadsAndRepairSSA" [fillcolor="#f3e6ff" color="#8c564b" label=<<b>emitReloadsAndRepairSSA</b><br/><font point-size="8">place reloads, repair SSA<br/>119 runs / 1.6%</font>>];
+    "splitLiveRangeAt" [fillcolor="#f3e6ff" color="#8c564b" label=<<b>splitLiveRangeAt</b><br/><font point-size="8">split a range at a slot<br/>8 runs / 0.1%</font>>];
+    "adjustReloadForLoop" [fillcolor="#f3e6ff" color="#8c564b" label=<<b>adjustReloadForLoop</b><br/><font point-size="8">hoist a reload out of a loop<br/>119 runs / 1.6%</font>>];
+    "assignVirt2StackSlot" [fillcolor="#f3e6ff" color="#8c564b" label=<<b>assignVirt2StackSlot</b><br/><font point-size="8">frame index per value<br/>119 runs / 1.6%</font>>];
+  }
+  subgraph cluster_9 {
+    label="8  SSA destruction / rewrite"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#17becf"; penwidth=3; fontcolor="#17becf"; fontname="Helvetica-Bold"; fontsize=13;
+    "rewriteStage" [fillcolor="#e6f0ff" color="#17becf" label=<<b>rewriteStage</b><br/><font point-size="8">this file's vregs to physregs<br/>7375 runs / 99.4%</font>>];
+    "lowerPHIs" [fillcolor="#e6f0ff" color="#17becf" label=<<b>lowerPHIs</b><br/><font point-size="8">PHI to copies<br/>7375 runs / 99.4%</font>>];
+    "resolvePermutation" [fillcolor="#e6f0ff" color="#17becf" label=<<b>resolvePermutation</b><br/><font point-size="8">parallel copies, cycle breaking<br/>5348 runs / 72.1%</font>>];
+    "rewriteOperands" [fillcolor="#e6f0ff" color="#17becf" label=<<b>rewriteOperands</b><br/><font point-size="8">substitute physregs<br/>7375 runs / 99.4%</font>>];
+    "eliminateRegSequences" [fillcolor="#e6f0ff" color="#17becf" label=<<b>eliminateRegSequences</b><br/><font point-size="8">lower REG_SEQUENCE<br/>7375 runs / 99.4%</font>>];
+    "eliminateIdentityCopies" [fillcolor="#e6f0ff" color="#17becf" label=<<b>eliminateIdentityCopies</b><br/><font point-size="8">drop self copies<br/>7375 runs / 99.4%</font>>];
+    "addPhysRegLiveIns" [fillcolor="#e6f0ff" color="#17becf" label=<<b>addPhysRegLiveIns</b><br/><font point-size="8">recompute live-ins<br/>7375 runs / 99.4%</font>>];
+  }
+  subgraph cluster_10 {
+    label="9  finalize"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#bcbd22"; penwidth=3; fontcolor="#bcbd22"; fontname="Helvetica-Bold"; fontsize=13;
+    "finalizeAfterRewrite" [fillcolor="#f7f7d0" color="#bcbd22" label=<<b>finalizeAfterRewrite</b><br/><font point-size="8">whole-function fixups after both stages<br/>7372 runs / 99.4%</font>>];
+    "finalizeProperties" [fillcolor="#f7f7d0" color="#bcbd22" label=<<b>finalizeProperties</b><br/><font point-size="8">clear virt regs, set MF properties<br/>7372 runs / 99.4%</font>>];
+  }
+  subgraph cluster_11 {
+    label="10  observers  (off by default)"; style="rounded,filled"; fillcolor="#fbfbfb"; color="#aaaaaa"; penwidth=3; fontcolor="#aaaaaa"; fontname="Helvetica-Bold"; fontsize=13;
+    "setupShadowTree" [fillcolor="#ffffff" color="#aaaaaa" label=<<b>setupShadowTree</b><br/><font point-size="8">SSARegisterTree shadow of ColorMap<br/>7375 runs / 99.4%</font>>];
+    "shadowAllocate" [fillcolor="#ffffff" color="#aaaaaa" label=<<b>shadowAllocate</b><br/><font point-size="8">mirror an allocation into the tree<br/>7040 runs / 94.9%</font>>];
+    "emitRecoveryWindow" [style="filled,rounded,dashed" fillcolor="#ffffff" color="#999999" fontcolor="#999999" label=<<b>emitRecoveryWindow</b><br/><font point-size="8">forensic window dump<br/>NEVER RUNS</font>>];
+    "verifyValueFlow" [style="filled,rounded,dashed" fillcolor="#ffffff" color="#999999" fontcolor="#999999" label=<<b>verifyValueFlow</b><br/><font point-size="8">check the resulting assembly<br/>NEVER RUNS</font>>];
+  }
+  "AMDGPURebuildSSA" -> "AMDGPUPHISimplifier" [color="#555555" style=bold];
+  "AMDGPUPHISimplifier" -> "runOnMachineFunction" [color="#555555" style=bold];
+  "runOnMachineFunction" -> "AMDGPUVerifyPhysRegLiveness" [color="#555555" style=bold];
+  "runOnMachineFunction" -> "hasCFPseudos" [ constraint=false];
+  "runOnMachineFunction" -> "widenToAVOnUnified" [ constraint=false];
+  "runOnMachineFunction" -> "classifyVRegs" [ constraint=false];
+  "runOnMachineFunction" -> "preSpillToLimitWidthAware" [ constraint=false];
+  "runOnMachineFunction" -> "color" [ constraint=false];
+  "runOnMachineFunction" -> "reduceRegionPressure" [ constraint=false];
+  "runOnMachineFunction" -> "recoverUncolorable" [ constraint=false];
+  "runOnMachineFunction" -> "tryAGPRHomeRescue" [ constraint=false];
+  "runOnMachineFunction" -> "reportPointOverPressure" [ constraint=false];
+  "runOnMachineFunction" -> "rewriteStage" [ constraint=false];
+  "runOnMachineFunction" -> "finalizeAfterRewrite" [ constraint=false];
+  "preSpillToLimitWidthAware" -> "findTightRegions" [];
+  "preSpillToLimitWidthAware" -> "relieveTightRegion" [];
+  "relieveTightRegion" -> "measureRegionPeak" [];
+  "relieveTightRegion" -> "planSpill" [];
+  "relieveTightRegion" -> "spillOneVMP" [];
+  "relieveTightRegion" -> "spillPhiWeb" [];
+  "measureRegionPeak" -> "wholeBlockDemand" [];
+  "findTightRegions" -> "wholeBlockDemand" [];
+  "planSpill" -> "costOfSpilling" [];
+  "planSpill" -> "predictSpill" [ style=dashed color="#cccccc"];
+  "color" -> "seedOccupiedAtBBEntry" [];
+  "color" -> "pickFreePhysReg" [];
+  "color" -> "preassignValuesLiveAcrossCalls" [];
+  "color" -> "collectPhiHints" [];
+  "color" -> "markOccupied" [];
+  "markOccupied" -> "shadowAllocate" [];
+  "runOnMachineFunction" -> "setupShadowTree" [ constraint=false];
+  "finalizeAfterRewrite" -> "finalizeProperties" [];
+  "spillPhiWeb" -> "buildDomGroupsForSpill" [];
+  "spillPhiWeb" -> "emitReloadsAndRepairSSA" [];
+  "pickFreePhysReg" -> "availableOrder" [];
+  "pickFreePhysReg" -> "survivesClobberSites" [];
+  "reduceRegionPressure" -> "findTightRegions" [];
+  "reduceRegionPressure" -> "measureRegionPeak" [];
+  "reduceRegionPressure" -> "planSpill" [];
+  "reduceRegionPressure" -> "spillPhiWeb" [];
+  "reduceRegionPressure" -> "spillOneVMP" [];
+  "recoverUncolorable" -> "classifyRecovery" [];
+  "recoverUncolorable" -> "collectRecoveryWindow" [];
+  "recoverUncolorable" -> "trySelfSplitColor" [];
+  "recoverUncolorable" -> "spillBlocker" [];
+  "recoverUncolorable" -> "closePhiWeb" [];
+  "recoverUncolorable" -> "webReloadFeasible" [];
+  "recoverUncolorable" -> "spillPhiWeb" [];
+  "recoverUncolorable" -> "colorOneInPlace" [];
+  "recoverUncolorable" -> "reportPointOverPressure" [];
+  "recoverUncolorable" -> "emitRecoveryWindow" [ style=dashed color="#cccccc"];
+  "trySelfSplitColor" -> "splitLiveRangeAt" [];
+  "trySelfSplitColor" -> "commitColor" [];
+  "spillBlocker" -> "splitLiveRangeAt" [];
+  "spillOneVMP" -> "spillAtDefinition" [];
+  "spillOneVMP" -> "buildDomGroupsForSpill" [];
+  "spillOneVMP" -> "emitReloadsAndRepairSSA" [];
+  "spillOneVMP" -> "assignVirt2StackSlot" [];
+  "colorOneInPlace" -> "pickFreePhysReg" [];
+  "tryAGPRHomeRescue" -> "colorOneInPlace" [];
+  "rewriteStage" -> "lowerPHIs" [];
+  "rewriteStage" -> "rewriteOperands" [];
+  "rewriteStage" -> "eliminateRegSequences" [];
+  "rewriteStage" -> "eliminateIdentityCopies" [];
+  "rewriteStage" -> "addPhysRegLiveIns" [];
+  "eliminateRegSequences" -> "resolvePermutation" [];
+  "classifyVRegs" -> "preSpillToLimitWidthAware" [style=invis weight=100];
+  "preSpillToLimitWidthAware" -> "color" [style=invis weight=100];
+  "color" -> "reduceRegionPressure" [style=invis weight=100];
+  "reduceRegionPressure" -> "recoverUncolorable" [style=invis weight=100];
+  "recoverUncolorable" -> "spillOneVMP" [style=invis weight=100];
+  "spillOneVMP" -> "rewriteStage" [style=invis weight=100];
+}
